@@ -359,7 +359,7 @@ class Bot {
 		try {
 			$periodStart = date('Y-m-1 00:00:00');
 			$periodEnd = date('Y-m-t 23:59:59');
-			$queryStr = "SELECT IFNULL(accounts.title, '') AS account, SUM(purse.amount) AS amount FROM purse INNER JOIN accounts ON accounts.id=purse.account WHERE purseID = $purseID GROUP BY accounts.title ORDER BY amount";
+			$queryStr = "SELECT IFNULL(accounts.title, '') AS account, SUM(purse.amount) AS amount FROM purse INNER JOIN accounts ON accounts.id=purse.account WHERE purseID = $purseID AND period >= '$periodStart' AND period <= '$periodEnd' GROUP BY accounts.title ORDER BY amount";
 			$this->insertLog($queryStr."<br/>", true);
 			$query = $this->db->query($queryStr);
 			if (!$query)

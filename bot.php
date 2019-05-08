@@ -7,9 +7,10 @@ $bot = new Bot($conf);
 $mess = $bot->getMessage(file_get_contents('php://input'));
 $conf->insertLog('Сообщение: '.$mess, true);
 $answers = $bot->makeAnswer();
-foreach($answers as $answer) {
+foreach($answers as $key => $answer) {
   $conf->insertLog('Ответ: '.$answer, true);
-  echo $bot->sendAnswer($answer);
+  $res = $bot->sendAnswer($answer);
+  if ($key == 0) echo $res;
 }
 //------------------------------------------------------
 
