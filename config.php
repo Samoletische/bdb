@@ -174,13 +174,15 @@ abstract class Message {
 
 		if (($this->type != 'sendOnly') && (($this->type != 'sendAndWait'))
 			throw new BotException('wrong type of sender message');
+		foreach($this->content as $content) {
 		$messURL = $this->bot->getAPIURL().
-			"messages.send?user_id=".$this->userID.
-			"&group_id=".$this->conf->getGroupID().
-			"&message=".urlencode($answer).
-			"&v=".$this->conf->getVersion().
-			"&access_token=".$this->conf->getGroupToken();
+			"messages.send?user_id=".$this->receiver->getID().
+			"&group_id=".$this->sender->getID().
+			"&message=".urlencode($content).
+			"&v=".$this->bot->getVersion().
+			"&access_token=".$this->bot->getGroupToken();
 		$request = file_get_contents($messURL);
+		}
 
 	} // Message::send
 
