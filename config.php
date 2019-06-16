@@ -20,10 +20,15 @@ abstract class BotMngr {
 		if (json_last_error() != JSON_ERROR_NONE)
 			throw new BotException('bad JSON in \'conf.json\'');
 
-		// check config fields
+		// check config fields (level 1)
 		$firstKeyNotExists = '';
 		if (!self::array_keys_exists(self::$requiredFields, $conf, $firstKeyNotExists))
 			throw new BotException('not all required fields exists in \'conf.json\', not exists \''.$firstKeyNotExists.'\'');
+
+		// check config fields (level 2)
+		$requiredFields = array('message', 'answer');
+		if (!self::array_keys_exists($requiredFields, $conf['standardCommands'], $firstKeyNotExists))
+			throw new BotException('not all required fields exists in \'standardCommands\', not exists \''.$firstKeyNotExists.'\'');
 
 		// create storage
 		try {
@@ -210,7 +215,205 @@ abstract class Message {
 	//------------------------------------------------------
 
 	static public function makeAnswer() {
-		throw new BotException('no body of makeAnswer');
+
+		// prepare content for answer
+		$answerContent = array();
+		foreach ($this->content as $content) {
+
+			switch ($content['type']) {
+				case 'confirmation':
+					$answerContent[] = array('message' => $this->bot->getConfirmToken(), 'type' => 'message');
+					break;
+				case 'message_new':
+
+					// check standard commands
+					foreach ($this->bot->getConf()['standardCommands'] as $command) {
+						if ($command['message'] == $content['message']) {
+							foreach ($content['answer'] as $answer)
+								$answerContent[] = array('message' => $answer, 'type' => 'message');
+							break;
+						}
+					}
+
+					// check other commands
+					$mess = mb_strtolower($content['message']);
+
+					break;
+				default:
+					throw new BotException('unknown message type \''.$content['type'].'\' for make answer');
+		}
+
+		// make object
+		return new OutMessage($this->bot, $answerContent, $this->receiver, $this->sender);
+
+
+		// 		//++ проверка настроек пользователя в базе
+		// 		if (!$this->db) {
+		// 			$this->answer[] = 'Ошибка обработки команды';
+		// 			return $this->answer;
+		// 		}
+		//
+		// 		// ошибка работы с базой
+		// 		$this->insertLog('SELECT purseID FROM users WHERE userID='.$this->userID);
+		// 		$query = $this->db->query('SELECT purseID FROM users WHERE userID='.$this->userID);
+		// 		if (!$query) {
+		// 			$this->insertLog('(002) Не могу выполнить запрос'.$this->db->error);
+		// 			$this->answer[] = 'Ошибка обработки команды';
+		// 			return $this->answer;
+		// 		}
+		// 		// неизвестный (для бота) пользователь
+		// 		if ($query->num_rows == 0) {
+		// 			$this->insertLog('(003) пользователь : '.$userID.' отсутствует в базе данных');
+		// 			$this->answer[] = 'Ошибка обработки команды';
+		// 			return $this->answer;
+		// 		}
+		// 		// не настроен кошелёк для пользователя
+		// 		$row = $query->fetch_array();
+		// 		if ($row["purseID"] == 0) {
+		// 			$this->insertLog('(004) для пользователя : '.$userID.' не настроен кошелёк');
+		// 			$this->answer[] = 'Ошибка обработки команды';
+		// 			return $this->answer;
+		// 		}
+		// 		$purseID = $row["purseID"];
+		// 		//-- проверка настроек пользователя в базе
+		//
+		// 		// определяем пришедшую команду
+		// 		$answ_type = 0;
+		// 		$answ_param = 0;
+		//
+		// 		$parts = explode(" ", $this->mess);
+		//
+		// 		//++ введение расходов/доходов
+		// 		// не указан знак суммы или указан знак слитно с суммой
+		// 		if ((float) $parts[0] != "") {
+		// 		    $amount = (float) $parts[0];
+		// 			$answ_type = 1; // insertAmount
+		// 		}
+		//
+		// 		// указан знак отдельно от суммы
+		// 		if (($answ_type == 0)
+		// 	        && (($parts[0] == "-") || ($parts[0] == "+"))
+		// 	        && (count($parts) > 1)
+		// 	        && ((float) ($parts[0].$parts[1]) != "")) {
+		//
+		//       $answ_type = 1; // insertAmount
+		//       $mark = array_shift($parts);
+		//       $parts[0] = $mark.$parts[0];
+		//
+		// 		}
+		// 	  //-- введение расходов/доходов
+		//
+		// 		//++ другие команды, связанные с ответом из базы
+		// 		$command = mb_strtolower($parts[0]);
+		// 		$param = count($parts) > 1 ? mb_strtolower($parts[1]) : '';
+		// 		// 'показать'
+		// 		if (($answ_type == 0)
+		// 			&& (($command == "показать") || ($command == "показ"))) {
+		//
+		// 			$answ_type = 2; // showAll
+		// 		  if ((count($parts) > 1)	&& ($param == "сегодня"))
+		// 				$answ_param = 1; // today
+		// 	    if ((count($parts) > 1) && ($param == "вчера"))
+		// 				$answ_param = 2; // yesterday
+		//
+		// 		}
+		//
+		// 		// 'статьи'
+		// 		if (($answ_type == 0) && ($command == "статьи")) {
+		// 			$answ_type = 5; // showAccounts
+		// 			$answ_param = '';
+		// 			if (count($parts) > 1)
+		//       	$answ_param = $param;
+		// 		}
+		//
+		// 		// 'баланс'
+		// 		if (($answ_type == 0) && ($command == "баланс")) {
+		// 			$answ_type = 6; // showBalance
+		// 			$answ_param = '';
+		// 		}
+		//
+		// 		// 'отчет'
+		// 		if (($answ_type == 0)
+		// 			&& (($command == "отчет") || ($command == "отчёт"))) {
+		//
+		// 			$answ_type = 7; // report
+		// 		  if ((count($parts) > 1)	&& ($param == "статьи"))
+		// 				$answ_param = 1; // accounts
+		//
+		// 		}
+		//   	//-- другие команды, связанные с ответом из базы
+		//
+		// 		//++ обработка команд, формирование ответа
+		// 		switch ($answ_type) {
+		//     	case 1: // insertAmount
+		//         $res = $this->insertAmount($parts, $purseID);
+		//         if ($res['result'] == "ok")
+		//         	$this->answer[] = $res['message'];
+		//         else {
+		//         	$this->insertLog('(005) ошибка обработки прихода/расхода: '.$res['message']);
+		//         	$this->answer[] = "ошибка обработки команды";
+		//         }
+		//         break;
+		//       case 2: // showAll
+		// 	      if (($answ_param < 1) || ($answ_param > 2)) {
+		// 	      	$this->insertLog('(006) неверные параметры команды "показать": '.$answ_param);
+		// 	      	$this->answer[] = "неверные параметры команды";
+		// 	      }
+		// 	      else {
+		// 	        $res = $this->showAll($answ_param, $purseID);
+		// 	        if ($res['result'] == "ok")
+		// 	        	$this->answer[] = $res['message'];
+		// 	        else {
+		// 	        	$this->insertLog('(007) ошибка обработки команды "показать": '.$res['message']);
+		// 	        	$this->answer[] = "ошибка обработки команды";
+		// 	        }
+		// 	      }
+		// 	      break;
+		//       case 3: // showReceipt
+		//       	break;
+		//       case 4: // showExpense
+		//       	break;
+		// 			case 5: // showAccounts
+		// 				try {
+		// 					$res = $this->getAccount($answ_param, true);
+		// 					$this->answer[] = "Перечень статей:\n".$res['message'];
+		// 				}
+		// 				catch (Exception $e) {
+		// 		    	$this->insertLog('(008) ошибка обработки команды "статьи": '.$this->db->error);
+		// 					$this->answer[] = "ошибка обработки команды";
+		// 		    }
+		// 				break;
+		// 			case 6: // showBalance
+		// 				$res = $this->getBalance($purseID);
+		// 				if ($res['result'] == "ok")
+		// 				 	$this->answer[] = $res['message'];
+		// 				 else {
+		// 				 	$this->insertLog('(009) ошибка обработки команды "баланс": '.$res['message']);
+		// 				 	$this->answer[] = "ошибка обработки команды";
+		// 				 }
+		// 				break;
+		// 			case 7: // report
+		// 				if (($answ_param < 1) || ($answ_param > 2)) {
+		// 	      	$this->insertLog('(010) неверные параметры команды "отчёт": '.$answ_param);
+		// 	      	$this->answer[] = "неверные параметры команды";
+		// 	      }
+		// 	      else {
+		// 	        $res = $this->getReport($answ_param, $purseID);
+		// 	        if ($res['result'] == "ok")
+		// 	        	$this->answer = explode("\n", $res['message']);
+		// 	        else {
+		// 	        	$this->insertLog('(011) ошибка обработки команды "отчёт": '.$res['message']);
+		// 	        	$this->answer[] = "ошибка обработки команды";
+		// 	        }
+		// 	      }
+		// 				break;
+		// 		    default:
+		// 		    	$this->answer[] = $this->conf->getNoCommandMessage();
+		// 		}
+		// 		//-- обработка команд, формирование ответа
+		//
+		// 		return $this->answer;
+
 	} // Message::makeAnswer
 	//------------------------------------------------------
 
@@ -225,7 +428,7 @@ abstract class Message {
 			"&access_token=".$bot->getGroupToken();
 		$request = file_get_contents($messURL); // still without post-обработки ))
 
-	} // Message::send
+	} // Message::sendMessage
 	//------------------------------------------------------
 
 	function __construct($bot, $content, $sender, $receiver) {
@@ -274,7 +477,7 @@ class OutMessage extends Message {
 					parent::sendMessage($this->bot, $content['message'], $this->sender->getID(), $this->receiver->getID());
 					break;
 				default:
-					throw new BotException('not permited message type in sending message');
+					throw new BotException('unknown message type \''.$content['type'].'\' for sending message');
 			}
 		}
 
