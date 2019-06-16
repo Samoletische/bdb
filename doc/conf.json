@@ -1,6 +1,7 @@
 {
   "testMode": true,
-  "input": "php://input",
+  "mainInput": "php://input",
+  "testInput": "http://192.168.0.20/bdb/testInput.php",
   "accessToken": "2043ff6465a697a2e91dc7a5ec4bc835f6a16385be662efb90ad8d2557e28a5e9e18e038f2aff293b62f8",
   "groupToken": "e3c415542019a47f3bc495c56ee87d4d8009fa3f7656fc112770e587ecca1dbab151f285cadbd7e5f01fd",
   "confirmToken": "12691b63",
@@ -44,5 +45,5 @@
       ]
     }
   ],
-
+  "noCommands": "ничего не понял..."
 }

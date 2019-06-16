@@ -5,8 +5,8 @@ class BotException extends Exception {} // BotException
 
 abstract class BotMngr {
 
-	private requiredFields = array(
-		'testMode', 'input', 'accessToken', 'groupToken', 'confirmToken', 'groupID', 'APIURL', 'version',
+	static private $requiredFields = array(
+		'testMode', 'mainInput', 'testInput', 'accessToken', 'groupToken', 'confirmToken', 'groupID', 'APIURL', 'version',
 		'waitCommandTimeOut', 'storageMode', 'storageParams', 'standardCommands'
 	);
 	//------------------------------------------------------
@@ -15,20 +15,21 @@ abstract class BotMngr {
 
 		// read config
 		if (!file_exists('conf.json'))
-			throw new BotException('file ''conf.json'' not exists');
+			throw new BotException('file \'conf.json\' not exists');
 		$conf = json_decode(file_get_contents('conf.json'), true);
 		if (json_last_error() != JSON_ERROR_NONE)
-			throw new BotException('bad JSON in ''conf.json''');
+			throw new BotException('bad JSON in \'conf.json\'');
 
-		// check config
-		if (!BotMngr::array_keys_exists($this->requiredFields, $conf))
-			throw new BotException('not all required fields exists in ''conf.json''');
+		// check config fields
+		$firstKeyNotExists = '';
+		if (!self::array_keys_exists(self::$requiredFields, $conf, $firstKeyNotExists))
+			throw new BotException('not all required fields exists in \'conf.json\', not exists \''.$firstKeyNotExists.'\'');
 
 		// create storage
 		try {
-			$storage = Storage::createStorage($conf['storageMode'], $conf['storageParams'], $conf['testMode'], $error);
+			$storage = Storage::createStorage($conf['storageMode'], $conf['storageParams'], $conf['testMode']);
 		} catch (BotException $e) {
-			throw new BotException('don''t create Storage: '.$e->getMessage());
+			throw new BotException('don\'t create Storage: '.$e->getMessage());
 		}
 
 		// create Bot
@@ -37,20 +38,103 @@ abstract class BotMngr {
 		return new Bot($storage, $conf);
 
 	} // BotManager::createBot
+	//------------------------------------------------------
 
-	static function array_keys_exists($keys, $array) {
+	static function array_keys_exists($keys, $array, &$firstKeyNotExists='') {
 		foreach($keys as $key)
-			if (!array_key_exists($key, $array))
+			if (!array_key_exists($key, $array)) {
+				$firstKeyNotExists = $key;
 				return false;
+			}
 		return true;
 	} // BotMngr::array_keys_exists
+	//------------------------------------------------------
 
 } // BotMngr
 //------------------------------------------------------
 
+class Bot {
+
+	private $storage;
+	private $conf;
+	//------------------------------------------------------
+
+	function __construct($storage, $conf) {
+		$this->storage = $storage;
+		$this->conf = $conf;
+	} // Bot::__construct
+	//------------------------------------------------------
+
+	function __destruct() {
+		unset($this->storage);
+	} // Bot::__destruct
+	//------------------------------------------------------
+
+	public function getMessage() {
+
+		// get data from input
+		$input = $this->conf['testMode'] ? $this->conf['testInput'] : $this->conf['mainInput'];
+		$data = json_decode(file_get_contents($input));
+		if (json_last_error() != JSON_ERROR_NONE)
+			throw new BotException('bad JSON in input');
+
+		// check for nessesary fields (level 1)
+		$requiredFields = array('object', 'type');
+		$firstKeyNotExists = '';
+		if (!BotMngr::array_keys_exists($requiredFields, $data, $firstKeyNotExists))
+			throw new BotException('not all required fields exists in input data, not exists \''.$firstKeyNotExists.'\'');
+		// check for nessesary fields (level 2)
+		$requiredFields = array('body', 'user_id');
+		if (!BotMngr::array_keys_exists($requiredFields, $data->object, $firstKeyNotExists))
+			throw new BotException('not all required fields exists in input subdata, not exists \''.$firstKeyNotExists.'\'');
+
+		// create object
+		return new InMessage($this, array(array('message' => $data->object->body, 'type' => $data->type)), Member::getMember($this, false, $data->object->user_id), Member::getMember($this, true, $this->conf['groupID']));
+
+	} // Bot::getMessage
+	//------------------------------------------------------
+
+	public function getConf() {
+		return $this->conf;
+	} // Bot::getConf
+	//------------------------------------------------------
+
+	public function getAPIURL() {
+		return $this->conf['APIURL'];
+	} // Bot::getAPIURL
+	//------------------------------------------------------
+
+	public function getGroupToken() {
+		return $this->conf['groupToken'];
+	} // Bot::getGroupToken
+	//------------------------------------------------------
+
+	public function getAccessToken() {
+		return $this->conf['accessToken'];
+	} // Bot::getAccessToken
+	//------------------------------------------------------
+
+	public function getVersion() {
+		return $this->conf['version'];
+	} // Bot::getVersion
+	//------------------------------------------------------
+
+	public function startWaiting() {
+		// start waiting
+	} // Bot::startWaiting
+	//------------------------------------------------------
+
+	public function insertLog($message, $debug=false) {
+		$this->storage->insertLog($message, $debug);
+	} // Bot::insertLog
+	//------------------------------------------------------
+
+} // Bot
+//------------------------------------------------------
+
 abstract class Storage {
 
-	private $requiredFieldsDB = array('server', 'database', 'dbUser', 'dbPassword');
+	static private $requiredFieldsDB = array('server', 'database', 'dbUser', 'dbPassword');
 	//------------------------------------------------------
 
 	static function createStorage($mode, $params, $testMode) {
@@ -58,12 +142,13 @@ abstract class Storage {
 		switch ($mode) {
 			case 'MYSQL' :
 				// check params
-				if (!BotMngr::array_keys_exists($this->requiredFieldsDB, $params))
-					throw new BotException('not all required fields exists in ''storageParams''');
+				$firstKeyNotExists = '';
+				if (!BotMngr::array_keys_exists(self::$requiredFieldsDB, $params, $firstKeyNotExists))
+					throw new BotException('not all required fields exists in \'storageParams\', not exists \''.$firstKeyNotExists.'\'');
 				// check connect
 				$db = mysqli_connect($params['server'], $params['dbUser'], $params['dbPassword'], $params['database']);
 				if (!$db)
-					throw new BotException('can''t connect to MySQL: '.mysqli_connect_error());
+					throw new BotException('can\'t connect to MySQL: '.mysqli_connect_error());
 				// create object
 				return new StorageMYSQL($db, $testMode);
 			case 'FILE' :
@@ -75,8 +160,8 @@ abstract class Storage {
 	} // Storage::createStorage
 	//------------------------------------------------------
 
-	public function insertLog($message, $debug=false);
-	public function query($queryStr);
+	abstract public function insertLog($message, $debug=false);
+	abstract public function query($queryStr);
 	//------------------------------------------------------
 
 } // Storage
@@ -102,141 +187,212 @@ class StorageMySQL {
 	public function insertLog($message, $debug=false) {
 		try {
 			if (!$debug || $this->testMode)
-				$this->db->query("INSERT INTO logs(message, debug, dateNow) VALUES('".$mess."', '".($debug ? 1 : 0)."', '".date('Y-m-d H:i:s')."')");
+				$this->db->query("INSERT INTO logs(message, debug, dateNow) VALUES('$message', '".($debug ? 1 : 0)."', '".date('Y-m-d H:i:s')."')");
 		}	catch (Exception $ex) {
 		} catch (Error $er) {}
 	} // StorageMySQL::insertLog
 	//------------------------------------------------------
 
 	public function query($queryStr) {
-		return true;
+		throw new BotException('no body of query');
 	} // StorageMySQL::query
 	//------------------------------------------------------
 
 } // StorageMySQL
 //------------------------------------------------------
 
-class Bot {
-
-	private $storage;
-	private $conf;
-	//------------------------------------------------------
-
-	function __construct($storage, $conf) {
-		$this->storage = $storage;
-		$this->conf = $conf;
-	} // Bot::__construct
-	//------------------------------------------------------
-
-	function __destruct() {
-		unset($this->storage);
-	} // Bot::__destruct
-	//------------------------------------------------------
-
-	static public function getMessage() {
-
-		// get data from input
-		$data = json_decode(file_get_contents($this->conf['input']));
-		if (json_last_error != JSON_ERROR_NONE)
-			throw new BotException('bad JSON in input');
-
-		// check for nessesary fields (level 1)
-		$requiredFields = array('object', 'type');
-		if (!BotMngr::array_keys_exists($requiredFields, $$data))
-			throw new BotException('not all required fields exists in input data');
-		// check for nessesary fields (level 2)
-		$requiredFields = array('body', 'user_id');
-		if (!BotMngr::array_keys_exists($requiredFields, $$data))
-			throw new BotException('not all required fields exists in input subdata');
-		// create object
-		return new Query($this, $data->type, $data->object->body, $data->object->user_id, $this->conf['groupID']);
-	} // Bot::getMessage
-	//------------------------------------------------------
-
-	public function getAPIURL() {
-		return $this->conf['APIURL'];
-	} // Bot::getAPIURL
-	//------------------------------------------------------
-
-} // Bot
-//------------------------------------------------------
-
 abstract class Message {
 
-	private $bot;
-	private $sender;
-	private $receiver;
-	private $type;
-	private $content;
+	protected $bot;
+	protected $sender;
+	protected $receiver;
+	protected $content;
 	//------------------------------------------------------
 
-	static protected function send() {
+	static public function makeAnswer() {
+		throw new BotException('no body of makeAnswer');
+	} // Message::makeAnswer
+	//------------------------------------------------------
 
-		if (($this->type != 'sendOnly') && (($this->type != 'sendAndWait'))
-			throw new BotException('wrong type of sender message');
-		foreach($this->content as $content) {
-		$messURL = $this->bot->getAPIURL().
-			"messages.send?user_id=".$this->receiver->getID().
-			"&group_id=".$this->sender->getID().
-			"&message=".urlencode($content).
-			"&v=".$this->bot->getVersion().
-			"&access_token=".$this->bot->getGroupToken();
-		$request = file_get_contents($messURL);
-		}
+	static protected function sendMessage($bot, $message, $senderID, $receverID) {
+
+		// send message
+		$messURL = $bot->getAPIURL().
+			"messages.send?user_id=".$receiverID.
+			"&group_id=".$senderID.
+			"&message=".urlencode($message).
+			"&v=".$bot->getVersion().
+			"&access_token=".$bot->getGroupToken();
+		$request = file_get_contents($messURL); // still without post-обработки ))
 
 	} // Message::send
-
-} // Message
-//------------------------------------------------------
-
-class Query extends Message {
-
-	private $bot;
-	private $sender;
-	private $receiver;
-	private $type;
-	private $content;
 	//------------------------------------------------------
 
-	function __construct($bot, $type, $content, $sender, $receiver) {
+	function __construct($bot, $content, $sender, $receiver) {
 
 		$this->bot = $bot;
-		$this->type = $type;
 		$this->content = $content;
 		$this->sender = $sender;
 		$this->receiver = $receiver;
 
-	} // Query::__construct
-
-} // Query
-//------------------------------------------------------
-
-class User {
-
-	private $bot;
-	private $userID;
-	private $userName;
+	} // Message::__construct
 	//------------------------------------------------------
 
-	function __construct($bot) {
+	public function getSender() {
+		return $this->sender;
+	} // Message::getSender
+	//------------------------------------------------------
 
-	} // User:__construct
+	public function getReceiver() {
+		return $this->receiver;
+	} // Message::getReceiver
+	//------------------------------------------------------
+
+	public function getContent() {
+		return $this->content;
+	} // Query::getContent
+	//------------------------------------------------------
+
+} // Message
+//------------------------------------------------------
+
+class InMessage extends Message {
+
+
+
+} // InMessage
+//------------------------------------------------------
+
+class OutMessage extends Message {
+
+	public function send() {
+
+		// sending
+		foreach ($this->content as $content) {
+			switch ($content['type']) {
+				case "message":
+					parent::sendMessage($this->bot, $content['message'], $this->sender->getID(), $this->receiver->getID());
+					break;
+				default:
+					throw new BotException('not permited message type in sending message');
+			}
+		}
+
+		// start waiting
+		$this->bot->startWaiting();
+
+	} // OutMessage::send
+	//------------------------------------------------------
+
+} // OutMessage
+//------------------------------------------------------
+
+abstract class Member {
+
+	protected $bot;
+	protected $id;
+	protected $name;
+	//------------------------------------------------------
+
+	function __construct($bot, $id) {
+		$this->bot = $bot;
+		$this->id = $id;
+		$this->name = $this->getName();
+	} // Member:__construct
+	//------------------------------------------------------
+
+	static public function getMember($bot, $isGroup, $id) {
+		return $isGroup ? new Group($bot, $id) : new User($bot, $id);
+	} // Member::getMember
+	//------------------------------------------------------
+
+	public function getID() {
+		return $this->id;
+	} // Member::getID
+	//------------------------------------------------------
+
+	public function isOur() {
+		// check member for exists in data base
+		throw new BotException('no body of isOur');
+	} // Member::isOur
+	//------------------------------------------------------
+
+	abstract protected function getName();
+
+} // Member
+//------------------------------------------------------
+
+class User extends Member {
+
+	function __construct($bot, $id) {
+		parent::__construct($bot, $id);
+	} // User::__construct
+	//------------------------------------------------------
+
+	protected function getName() {
+
+		// get user data
+		$data = json_decode(file_get_contents($this->bot->getAPIURL().
+			"users.get?user_id=".$this->id.
+			"&v=".$this->bot->getVersion().
+			"&access_token=".$this->bot->getAccessToken()), true);
+		if (json_last_error() != JSON_ERROR_NONE)
+			throw new BotException('bad JSON from user data');
+
+		// check for nessesary fields (level 1)
+		$requiredFields = array('response');
+		$firstKeyNotExists = '';
+		if (!BotMngr::array_keys_exists($requiredFields, $data, $firstKeyNotExists))
+			throw new BotException('not all required fields exists in user data, not exists \''.$firstKeyNotExists.'\'');
+		// check for nessesary fields (level 2)
+		$requiredFields = array('first_name');
+		if (!BotMngr::array_keys_exists($requiredFields, $data['response'][0], $firstKeyNotExists))
+			throw new BotException('not all required fields exists in user data, not exists \''.$firstKeyNotExists.'\'');
+
+		return $data['response'][0]['first_name'];
+
+	} // User::getName
+	//------------------------------------------------------
 
 } // User
 //------------------------------------------------------
 
+class Group extends Member {
+
+	function __construct($bot, $id) {
+		parent::__construct($bot, $id);
+	} // Group::__construct
+	//------------------------------------------------------
+
+	protected function getName() {
+
+		// get group data
+		$data = json_decode(file_get_contents($this->bot->getAPIURL().
+			"groups.getById?group_id=".$this->id.
+			"&v=".$this->bot->getVersion().
+			"&access_token=".$this->bot->getAccessToken()), true);
+		if (json_last_error() != JSON_ERROR_NONE)
+			throw new BotException('bad JSON from group data');
+
+		// check for nessesary fields (level 1)
+		$requiredFields = array('response');
+		$firstKeyNotExists = '';
+		if (!BotMngr::array_keys_exists($requiredFields, $data, $firstKeyNotExists))
+			throw new BotException('not all required fields exists in group data, not exists \''.$firstKeyNotExists.'\'');
+		// check for nessesary fields (level 2)
+		$requiredFields = array('name');
+		if (!BotMngr::array_keys_exists($requiredFields, $data['response'][0], $firstKeyNotExists))
+			throw new BotException('not all required fields exists in group data, not exists \''.$firstKeyNotExists.'\'');
+
+		return $data['response'][0]['name'];
+
+	} // Group::getName
+	//------------------------------------------------------
+
+} // Group
+//------------------------------------------------------
+
 // class Bot {
-//
-// 	private function getUserInfo() {
-// 		// todo:
-// 		//	вставить проверку на получение содержимого запроса,
-// 		//	а также обработать содержимое запроса на предмет получения корректных данных
-// 		return json_decode(file_get_contents($this->conf->getAPIURL().
-// 			"users.get?user_id=".$this->userID.
-// 			"&v=".$this->conf->getVersion().
-// 			"&access_token=".$this->conf->getAccessToken()));
-// 	}
-// 	//------------------------------------------------------
 //
 // 	public function makeAnswer() {
 // 		$mess = mb_strtolower($this->mess);
