@@ -1,9 +1,14 @@
 <?php
 
 class BotException extends Exception {} // BotException
+class StorageException extends Exception {} // StorageException
 //------------------------------------------------------
 
 abstract class BotMngr {
+
+	public const QUERY_RESULT_UNLOAD = true;
+	public const QUERY_RESULT_CHOOSE = false;
+	//------------------------------------------------------
 
 	static private $requiredFields = array(
 		'testMode', 'mainInput', 'testInput', 'accessToken', 'groupToken', 'confirmToken', 'groupID', 'APIURL', 'version',
@@ -198,8 +203,19 @@ class StorageMySQL {
 	} // StorageMySQL::insertLog
 	//------------------------------------------------------
 
-	public function query($queryStr) {
-		throw new BotException('no body of query');
+	public function query($queryStr, $unloadResult=false) {
+		try {
+			if (is_null($this->db))
+				throw new StorageException('no storage exists: ');
+			$query = $this->db->query($queryStr);
+			if (!$query)
+				throw new Exception($this->db->error);
+			if ($query->num_rows === 0)
+				return NULL;
+			$result = $unloadResult ? $query->fetch_all() : $query->fetch_array();
+		} catch (Exception $e) {
+			throw new StorageException('exception in db query: '.$e->getMessage());
+		}
 	} // StorageMySQL::query
 	//------------------------------------------------------
 
@@ -235,8 +251,20 @@ abstract class Message {
 						}
 					}
 
+					// check user's purse
+					$purseID = $this->sender->getPurseID();
+					if (!is_null($purseID)) {
+						$answerContent[] = array('message' => 'у вас не подключен кошелёк, обратитесь к администратору этой группы', 'type' => 'message');
+						break;
+					}
+
 					// check other commands
 					$mess = mb_strtolower($content['message']);
+					foreach(Commands::$handlers as $handler) {
+						// вставить проверку существования метода и можно ли его запускать
+						if (Commands::$handler($this->sender, $mess, $answerContent))
+							break;
+					}
 
 					break;
 				default:
@@ -247,20 +275,6 @@ abstract class Message {
 		return new OutMessage($this->bot, $answerContent, $this->receiver, $this->sender);
 
 
-		// 		//++ проверка настроек пользователя в базе
-		// 		if (!$this->db) {
-		// 			$this->answer[] = 'Ошибка обработки команды';
-		// 			return $this->answer;
-		// 		}
-		//
-		// 		// ошибка работы с базой
-		// 		$this->insertLog('SELECT purseID FROM users WHERE userID='.$this->userID);
-		// 		$query = $this->db->query('SELECT purseID FROM users WHERE userID='.$this->userID);
-		// 		if (!$query) {
-		// 			$this->insertLog('(002) Не могу выполнить запрос'.$this->db->error);
-		// 			$this->answer[] = 'Ошибка обработки команды';
-		// 			return $this->answer;
-		// 		}
 		// 		// неизвестный (для бота) пользователь
 		// 		if ($query->num_rows == 0) {
 		// 			$this->insertLog('(003) пользователь : '.$userID.' отсутствует в базе данных');
@@ -453,7 +467,7 @@ abstract class Message {
 
 	public function getContent() {
 		return $this->content;
-	} // Query::getContent
+	} // Message::getContent
 	//------------------------------------------------------
 
 } // Message
@@ -488,6 +502,156 @@ class OutMessage extends Message {
 	//------------------------------------------------------
 
 } // OutMessage
+//------------------------------------------------------
+
+abstract class Commands {
+
+	static $handlers = array('entries');
+	//------------------------------------------------------
+
+	static function entries($sender, $in, &$out) {
+
+		$isThisCase = false;
+		$parts = explode(" ", $in);
+
+		// check for this case
+		// не указан знак суммы или указан знак слитно с суммой
+		if ((float) $parts[0] != "")
+			$isThisCase = true;
+
+		// указан знак отдельно от суммы
+		if (!$isThisCase
+	        && (($parts[0] == "-") || ($parts[0] == "+"))
+	        && (count($parts) > 1)
+	        && ((float) ($parts[0].$parts[1]) != "")) {
+      $mark = array_shift($parts);
+      $parts[0] = $mark.$parts[0];
+		}
+
+		if (!$isThisCase)
+			return false;
+
+		// empliment this case
+		$res = Commands::insertAmount($parts, $sender);
+    if ($res['result'] == "ok")
+    	$out = $res['message'];
+    else {
+    	$this->insertLog('(005) ошибка обработки прихода/расхода: '.$res['message']);
+    	$out[] = array('message' => 'ошибка обработки команды', 'type' => 'message');
+    }
+
+		return true;
+
+	} // Commands::entries
+	//------------------------------------------------------
+
+	static function getAccount($acc, $mayGetAll = false) {
+
+		$result = array( 'result' => 'error', 'message' => '', 'id' => '' );
+		$this->insertLog("acc=".$acc, true);
+		if (($acc == '') && !$mayGetAll)
+			return $result;
+
+		$query = $this->db->query("SELECT id, title FROM accounts WHERE title LIKE '%$acc%' ORDER BY title");
+		if (!$query)
+			throw new Exception('');
+
+		switch ($query->num_rows) {
+			case 0:
+			 	$result['result'] = 'no';
+				break;
+			case 1:
+				$result['result'] = 'ok';
+				break;
+			default:
+				$result['result'] = 'many';
+				break;
+		}
+
+		while ($row = $query->fetch_array()) {
+			$result['id'] = $query->num_rows == 1 ? $row['id'] : '';
+			$result['message'] .= ($result['message'] == '' ? '' : ', ').$row['title'];
+		}
+		$this->insertLog("accMessage=".$result['message'], true);
+
+		return $result;
+
+	} // Commands::getAccount
+	//------------------------------------------------------
+
+	static function insertAmount($parts, $sender) {
+
+		$result = array( 'result' => 'ok', 'message' => '');
+		$moition = "1";
+
+		$amount = (float) $parts[0];
+		$amount = (int) ($amount * 100);
+		$amount = (float) ($amount / 100);
+
+		try {
+			$account = Commands::getAccount(count($parts) > 1 ? $parts[1] : '');
+			$this->insertLog("accountResult=".$account['result'], true);
+
+			$start = strlen($parts[0]) + ($account['result'] == 'ok' ? strlen($parts[1]) + 2 : 1);
+			$this->insertLog("start=".$start, true);
+			$comment = substr(implode(" ", $parts), $start);
+			$comment = strlen($comment) <= 300 ? $comment : substr($comment, 300);
+
+			if (substr($parts[0], 0, 1) == "-")
+				$moition = "0";
+			$query = $this->db->query("
+				INSERT INTO
+					purse(period
+						,moition
+						,amount
+						,account
+						,comment
+						,userID
+						,purseID
+					)
+				VALUES('".date("Y-m-d H:i:s")."'
+					,".$moition."
+					,".$amount."
+					,'".$account['id']."'
+					,'".$comment."'
+					,".$this->userID."
+					,".$purseID.")");
+			if (!$query)
+				throw new Exception('');
+
+			if ($moition == 0) {
+				$result['message'] = 'расход';
+				$amount = 0 - $amount;
+			}
+			else
+				$result['message'] = 'приход';
+
+			$result['message'] .= " на сумму $amount руб. принят ";
+
+			if ($account['result'] == 'ok')
+				$result['message'] .= "по статье '".$account['message']."' ";
+			else
+				$result['message'] .= "без статьи ";
+
+			if ($comment == '')
+				$result['message'] .= "без комментария";
+			else
+				$result['message'] .= "с комментарием \"$comment\"";
+
+			if ($account['result'] == "many")
+				$result['message'] .= "\nБез статьи, т. к. нашлось несколько: ".$account['message'];
+		}
+	    catch (Exception $e) {
+	    	$result['result'] = "error";
+	    	$result['message ']= $this->db->error;
+	    }
+
+	    return $result;
+
+	} // Commands::insertAmount
+	//------------------------------------------------------
+
+} // Commands
 //------------------------------------------------------
 
 abstract class Member {
@@ -527,12 +691,21 @@ abstract class Member {
 
 class User extends Member {
 
+	private $purse;
+	//------------------------------------------------------
+
 	function __construct($bot, $id) {
 		parent::__construct($bot, $id);
+		$this->purse = $this->getPurse();
 	} // User::__construct
 	//------------------------------------------------------
 
-	protected function getName() {
+	public function getPurseID() {
+		return is_null($this->purse) ? NULL : $this->purse['id'];
+	} // User::getPurseID
+	//------------------------------------------------------
+
+	private function getName() {
 
 		// get user data
 		$data = json_decode(file_get_contents($this->bot->getAPIURL().
@@ -555,6 +728,16 @@ class User extends Member {
 		return $data['response'][0]['first_name'];
 
 	} // User::getName
+	//------------------------------------------------------
+
+	private function getPurse() {
+		$queryStr = "";
+		try {
+			$this->purse = $this->bot->storage->query($queryStr, BotMngr::QUERY_RESULT_CHOOSE);
+		} catch (StorageException $e) {
+			$this->purse = NULL;
+		}
+	} // User::getPurse
 	//------------------------------------------------------
 
 } // User
