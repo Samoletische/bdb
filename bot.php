@@ -8,7 +8,7 @@ try {
   $answer = $message->makeAnswer();
   $answer->send();
 } catch (BotException $e) {
-  echo 'bot can\'t be started, because: '.$e->getMessage()."\n";
+  echo 'bot can\'t be started, because: '.$e->getMessage()." (".$e->getCode().")\n";
 }
 //------------------------------------------------------
 

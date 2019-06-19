@@ -32,8 +32,9 @@ abstract class BotMngr {
 
 		// check config fields (level 2)
 		$requiredFields = array('message', 'answer');
-		if (!self::array_keys_exists($requiredFields, $conf['standardCommands'], $firstKeyNotExists))
-			throw new BotException('not all required fields exists in \'standardCommands\', not exists \''.$firstKeyNotExists.'\'');
+		foreach($conf['standardCommands'] as $standardCommand)
+			if (!self::array_keys_exists($requiredFields, $standardCommand, $firstKeyNotExists))
+				throw new BotException('not all required fields exists in \'standardCommands\', not exists \''.$firstKeyNotExists.'\'');
 
 		// create storage
 		try {
@@ -45,7 +46,7 @@ abstract class BotMngr {
 		// create Bot
 		unset($conf['storageMode']);
 		unset($conf['storageParams']);
-		return new Bot($storage, $conf);
+		return Bot::getInstance($storage, $conf);
 
 	} // BotManager::createBot
 	//------------------------------------------------------
@@ -65,11 +66,23 @@ abstract class BotMngr {
 
 class Bot {
 
+	static $instance; // Singleton
+
 	private $storage;
 	private $conf;
 	//------------------------------------------------------
 
-	function __construct($storage, $conf) {
+	static function getInstance($storage=NULL, $conf=NULL) { // Singleton
+		if (empty(self::$instance)) {
+			if (is_null($conf))
+				return NULL;
+			self::$instance = new Bot($storage, $conf);
+		}
+		return self::$instance;
+	} // Bot::getInstance
+	//------------------------------------------------------
+
+	private function __construct($storage, $conf) { // Singleton
 		$this->storage = $storage;
 		$this->conf = $conf;
 	} // Bot::__construct
@@ -99,7 +112,7 @@ class Bot {
 			throw new BotException('not all required fields exists in input subdata, not exists \''.$firstKeyNotExists.'\'');
 
 		// create object
-		return new InMessage($this, array(array('message' => $data->object->body, 'type' => $data->type)), Member::getMember($this, false, $data->object->user_id), Member::getMember($this, true, $this->conf['groupID']));
+		return new InMessage(array(array('message' => $data->object->body, 'type' => $data->type)), Member::getMember(false, $data->object->user_id), Member::getMember(true, $this->conf['groupID']));
 
 	} // Bot::getMessage
 	//------------------------------------------------------
@@ -129,6 +142,11 @@ class Bot {
 	} // Bot::getVersion
 	//------------------------------------------------------
 
+	public function getNoCommandMessage() {
+		return $this->conf['noCommand'];
+	} // Bot::getNoCommandMessage
+	//------------------------------------------------------
+
 	public function startWaiting() {
 		// start waiting
 	} // Bot::startWaiting
@@ -137,6 +155,11 @@ class Bot {
 	public function insertLog($message, $debug=false) {
 		$this->storage->insertLog($message, $debug);
 	} // Bot::insertLog
+	//------------------------------------------------------
+
+	public function query($queryStr, $unloadResult=false) {
+		return $this->storage->query($queryStr, $unloadResult);
+	} // Bot::query
 	//------------------------------------------------------
 
 } // Bot
@@ -171,7 +194,7 @@ abstract class Storage {
 	//------------------------------------------------------
 
 	abstract public function insertLog($message, $debug=false);
-	abstract public function query($queryStr);
+	abstract public function query($queryStr, $unloadResult);
 	//------------------------------------------------------
 
 } // Storage
@@ -184,6 +207,7 @@ class StorageMySQL {
 	//------------------------------------------------------
 
 	function __construct($db, $testMode=false) {
+		$db->query('SET NAMES utf8');
 		$this->db = $db;
 		$this->testMode = $testMode;
 	} // StorageMySQL::_construct
@@ -210,9 +234,7 @@ class StorageMySQL {
 			$query = $this->db->query($queryStr);
 			if (!$query)
 				throw new Exception($this->db->error);
-			if ($query->num_rows === 0)
-				return NULL;
-			$result = $unloadResult ? $query->fetch_all() : $query->fetch_array();
+			return $unloadResult ? $query->fetch_all(MYSQLI_ASSOC) : $query;
 		} catch (Exception $e) {
 			throw new StorageException('exception in db query: '.$e->getMessage());
 		}
@@ -224,55 +246,80 @@ class StorageMySQL {
 
 abstract class Message {
 
-	protected $bot;
 	protected $sender;
 	protected $receiver;
 	protected $content;
 	//------------------------------------------------------
 
-	static public function makeAnswer() {
+	public function makeAnswer() {
 
 		// prepare content for answer
 		$answerContent = array();
+		$bot = Bot::getInstance();
+		if (is_null($bot))
+			throw BotException('can\'t take the Bot', 4);
+		//++ debug
+	  echo "making answer\n";
+	  print_r($this->content);
+	  //--
 		foreach ($this->content as $content) {
 
 			switch ($content['type']) {
 				case 'confirmation':
-					$answerContent[] = array('message' => $this->bot->getConfirmToken(), 'type' => 'message');
+					$answerContent[] = array('message' => $bot->getConfirmToken(), 'type' => 'message');
 					break;
 				case 'message_new':
 
 					// check standard commands
-					foreach ($this->bot->getConf()['standardCommands'] as $command) {
+					foreach ($bot->getConf()['standardCommands'] as $command) {
 						if ($command['message'] == $content['message']) {
 							foreach ($content['answer'] as $answer)
 								$answerContent[] = array('message' => $answer, 'type' => 'message');
 							break;
 						}
 					}
+					//++ debug
+				  echo "standard command checked\n";
+				  //--
 
 					// check user's purse
 					$purseID = $this->sender->getPurseID();
-					if (!is_null($purseID)) {
+					if (is_null($purseID)) {
 						$answerContent[] = array('message' => 'у вас не подключен кошелёк, обратитесь к администратору этой группы', 'type' => 'message');
 						break;
 					}
+					//++ debug
+				  echo "user purse checked\n";
+				  //--
 
 					// check other commands
 					$mess = mb_strtolower($content['message']);
+					$commandFound = false;
 					foreach(Commands::$handlers as $handler) {
 						// вставить проверку существования метода и можно ли его запускать
-						if (Commands::$handler($this->sender, $mess, $answerContent))
+						if (Commands::$handler($this->sender, $mess, $answerContent)) {
+							$commandFound = true;
 							break;
+						}
 					}
+					//++ debug
+				  echo "other commands checked\n";
+				  //--
+					if ($commandFound)
+						break;
+						
+					// unknown command
+					$answerContent[] = array('message' => $bot->getNoCommandMessage(), 'type' => 'message');
 
 					break;
 				default:
-					throw new BotException('unknown message type \''.$content['type'].'\' for make answer');
+					$bot->insertLog('unknown message type \''.$content['type'].'\' for make answer');
+					$answerContent[] = array('message' => $bot->getNoCommandMessage(), 'type' => 'message');
+			}
 		}
 
 		// make object
-		return new OutMessage($this->bot, $answerContent, $this->receiver, $this->sender);
+		return new OutMessage($answerContent, $this->receiver, $this->sender);
 
 
 		// 		// неизвестный (для бота) пользователь
@@ -431,7 +478,15 @@ abstract class Message {
 	} // Message::makeAnswer
 	//------------------------------------------------------
 
-	static protected function sendMessage($bot, $message, $senderID, $receverID) {
+	static function sendMessage($message, $senderID, $receiverID) {
+
+		$bot = Bot::getInstance();
+		if (is_null($bot))
+			throw BotException('can\'t take the Bot', 5);
+
+		//++ debug
+		echo "sending from $senderID to $receiverID\n";
+		//--
 
 		// send message
 		$messURL = $bot->getAPIURL().
@@ -445,9 +500,8 @@ abstract class Message {
 	} // Message::sendMessage
 	//------------------------------------------------------
 
-	function __construct($bot, $content, $sender, $receiver) {
+	function __construct($content, $sender, $receiver) {
 
-		$this->bot = $bot;
 		$this->content = $content;
 		$this->sender = $sender;
 		$this->receiver = $receiver;
@@ -484,19 +538,30 @@ class OutMessage extends Message {
 
 	public function send() {
 
+		//++ debug
+	  echo "answer created\n";
+	  print_r($this->content);
+	  //--
 		// sending
 		foreach ($this->content as $content) {
 			switch ($content['type']) {
 				case "message":
-					parent::sendMessage($this->bot, $content['message'], $this->sender->getID(), $this->receiver->getID());
+					//++ debug
+					echo "sending a message: {$content['message']}\n";
+					//--
+					parent::sendMessage($content['message'], $this->sender->getID(), $this->receiver->getID());
 					break;
 				default:
 					throw new BotException('unknown message type \''.$content['type'].'\' for sending message');
 			}
 		}
 
+		$bot = Bot::getInstance();
+		if (is_null($bot))
+			throw BotException('can\'t take the Bot', 6);
+
 		// start waiting
-		$this->bot->startWaiting();
+		$bot->startWaiting();
 
 	} // OutMessage::send
 	//------------------------------------------------------
@@ -511,6 +576,9 @@ abstract class Commands {
 
 	static function entries($sender, $in, &$out) {
 
+		$bot = Bot::getInstance();
+		if (is_null($bot))
+			throw BotException('can\'t take the Bot', 9);
 		$isThisCase = false;
 		$parts = explode(" ", $in);
 
@@ -531,12 +599,15 @@ abstract class Commands {
 		if (!$isThisCase)
 			return false;
 
-		// empliment this case
+		// implement this case
+		//++ debug
+		echo "insert amount\n";
+		//--
 		$res = Commands::insertAmount($parts, $sender);
     if ($res['result'] == "ok")
-    	$out = $res['message'];
+    	$out[] = array('message' => $res['message'], 'type' => 'message');
     else {
-    	$this->insertLog('(005) ошибка обработки прихода/расхода: '.$res['message']);
+    	$bot->insertLog('(005) ошибка обработки прихода/расхода: '.$res['message']);
     	$out[] = array('message' => 'ошибка обработки команды', 'type' => 'message');
     }
 
@@ -545,34 +616,51 @@ abstract class Commands {
 	} // Commands::entries
 	//------------------------------------------------------
 
-	static function getAccount($acc, $mayGetAll = false) {
+	static function getAccount($acc, $mayGetAll=false) {
+
+		$bot = Bot::getInstance();
+		if (is_null($bot))
+			throw BotException('can\'t take the Bot', 7);
 
 		$result = array( 'result' => 'error', 'message' => '', 'id' => '' );
-		$this->insertLog("acc=".$acc, true);
-		if (($acc == '') && !$mayGetAll)
-			return $result;
 
-		$query = $this->db->query("SELECT id, title FROM accounts WHERE title LIKE '%$acc%' ORDER BY title");
-		if (!$query)
-			throw new Exception('');
+		try {
+			$bot->insertLog("acc=".$acc, true);
+			if (($acc == '') && !$mayGetAll)
+				return $result;
 
-		switch ($query->num_rows) {
-			case 0:
-			 	$result['result'] = 'no';
-				break;
-			case 1:
-				$result['result'] = 'ok';
-				break;
-			default:
-				$result['result'] = 'many';
-				break;
+			$queryStr = "SELECT id, title FROM accounts WHERE title LIKE '%$acc%' ORDER BY title";
+			//++ debug
+			echo "query='$queryStr'\n";
+			//--
+			$query = $bot->query($queryStr);
+			//++ debug
+			echo "query is good\n";
+			//--
+			switch ($query->num_rows) {
+				case 0:
+				 	$result['result'] = 'no';
+					break;
+				case 1:
+					$result['result'] = 'ok';
+					break;
+				default:
+					$result['result'] = 'many';
+					break;
+			}
+
+			while ($row = $query->fetch_array()) {
+				$result['id'] = $query->num_rows == 1 ? $row['id'] : '';
+				$result['message'] .= ($result['message'] == '' ? '' : ', ').$row['title'];
+			}
+			$bot->insertLog("accMessage=".$result['message'], true);
+		} catch (StorageException $e) {
+			$result['result'] = "error";
+	   	$result['message'] = $e->getMessage();
+		} catch (Exception $ex) {
+			$result['result'] = "error";
+	   	$result['message'] = $ex->getMessage();
 		}
-
-		while ($row = $query->fetch_array()) {
-			$result['id'] = $query->num_rows == 1 ? $row['id'] : '';
-			$result['message'] .= ($result['message'] == '' ? '' : ', ').$row['title'];
-		}
-		$this->insertLog("accMessage=".$result['message'], true);
 
 		return $result;
 
@@ -581,25 +669,36 @@ abstract class Commands {
 
 	static function insertAmount($parts, $sender) {
 
-		$result = array( 'result' => 'ok', 'message' => '');
-		$moition = "1";
+		$bot = Bot::getInstance();
+		if (is_null($bot))
+			throw BotException('can\'t take the Bot', 8);
 
+		$result = array( 'result' => 'ok', 'message' => '');
+
+		$motion = "1";
 		$amount = (float) $parts[0];
 		$amount = (int) ($amount * 100);
 		$amount = (float) ($amount / 100);
 
 		try {
+			//++ debug
+			echo "amount=$amount\n";
+			//--
 			$account = Commands::getAccount(count($parts) > 1 ? $parts[1] : '');
-			$this->insertLog("accountResult=".$account['result'], true);
+			$bot->insertLog("accountResult=". $account['result'], true);
 
 			$start = strlen($parts[0]) + ($account['result'] == 'ok' ? strlen($parts[1]) + 2 : 1);
-			$this->insertLog("start=".$start, true);
+			$bot->insertLog("start=".$start, true);
 			$comment = substr(implode(" ", $parts), $start);
 			$comment = strlen($comment) <= 300 ? $comment : substr($comment, 300);
 
 			if (substr($parts[0], 0, 1) == "-")
-				$moition = "0";
-			$query = $this->db->query("
+				$motion = "0";
+
+			//++ debug
+			echo "account={$account['result']}, comment=$comment, motion=$motion\n";
+			//--
+			$queryStr="
 				INSERT INTO
 					purse(period
 						,moition
@@ -610,16 +709,18 @@ abstract class Commands {
 						,purseID
 					)
 				VALUES('".date("Y-m-d H:i:s")."'
-					,".$moition."
+					,".$motion."
 					,".$amount."
 					,'".$account['id']."'
 					,'".$comment."'
-					,".$this->userID."
-					,".$purseID.")");
-			if (!$query)
-				throw new Exception('');
+					,".$sender->getID()."
+					,".$sender->getPurseID().")";
+			//++ debug
+			echo "query for insert: $queryStr\n";
+			//--
+			$query = $bot->query($queryStr);
 
-			if ($moition == 0) {
+			if ($motion == 0) {
 				$result['message'] = 'расход';
 				$amount = 0 - $amount;
 			}
@@ -640,13 +741,15 @@ abstract class Commands {
 
 			if ($account['result'] == "many")
 				$result['message'] .= "\nБез статьи, т. к. нашлось несколько: ".$account['message'];
+		} catch (StorageException $e) {
+			$result['result'] = "error";
+	   	$result['message'] = $e->getMessage();
+		} catch (Exception $ex) {
+			$result['result'] = "error";
+	   	$result['message'] = $ex->getMessage();
 		}
-	    catch (Exception $e) {
-	    	$result['result'] = "error";
-	    	$result['message ']= $this->db->error;
-	    }
 
-	    return $result;
+		return $result;
 
 	} // Commands::insertAmount
 	//------------------------------------------------------
@@ -656,20 +759,18 @@ abstract class Commands {
 
 abstract class Member {
 
-	protected $bot;
 	protected $id;
 	protected $name;
 	//------------------------------------------------------
 
-	function __construct($bot, $id) {
-		$this->bot = $bot;
+	function __construct($id) {
 		$this->id = $id;
 		$this->name = $this->getName();
 	} // Member:__construct
 	//------------------------------------------------------
 
-	static public function getMember($bot, $isGroup, $id) {
-		return $isGroup ? new Group($bot, $id) : new User($bot, $id);
+	static public function getMember($isGroup, $id) {
+		return $isGroup ? new Group($id) : new User($id);
 	} // Member::getMember
 	//------------------------------------------------------
 
@@ -694,24 +795,28 @@ class User extends Member {
 	private $purse;
 	//------------------------------------------------------
 
-	function __construct($bot, $id) {
-		parent::__construct($bot, $id);
+	function __construct($id) {
+		parent::__construct($id);
 		$this->purse = $this->getPurse();
 	} // User::__construct
 	//------------------------------------------------------
 
 	public function getPurseID() {
-		return is_null($this->purse) ? NULL : $this->purse['id'];
+		return is_null($this->purse) ? NULL : $this->purse['purseID'];
 	} // User::getPurseID
 	//------------------------------------------------------
 
-	private function getName() {
+	protected function getName() {
+
+		$bot = Bot::getInstance();
+		if (is_null($bot))
+			throw new BotException('can\'t take the Bot', 1);
 
 		// get user data
-		$data = json_decode(file_get_contents($this->bot->getAPIURL().
+		$data = json_decode(file_get_contents($bot->getAPIURL().
 			"users.get?user_id=".$this->id.
-			"&v=".$this->bot->getVersion().
-			"&access_token=".$this->bot->getAccessToken()), true);
+			"&v=".$bot->getVersion().
+			"&access_token=".$bot->getAccessToken()), true);
 		if (json_last_error() != JSON_ERROR_NONE)
 			throw new BotException('bad JSON from user data');
 
@@ -731,11 +836,36 @@ class User extends Member {
 	//------------------------------------------------------
 
 	private function getPurse() {
-		$queryStr = "";
+		$bot = Bot::getInstance();
+		if (is_null($bot))
+			throw BotException('can\'t take the Bot', 2);
+		$queryStr = "SELECT * FROM users WHERE userID={$this->id}";
+		//++ debug
+		echo "get purse query: $queryStr\n";
+		//--
 		try {
-			$this->purse = $this->bot->storage->query($queryStr, BotMngr::QUERY_RESULT_CHOOSE);
+			$query = $bot->query($queryStr, BotMngr::QUERY_RESULT_UNLOAD);
+			//++ debug
+			echo "count of purse result: ".count($query)."\n";
+			//--
+			if (count($query) == 0) {
+				//++ debug
+				echo "return from get purse\n";
+				//--
+				return NULL;
+			}
+			$purse = $query[0];
+			//++ debug
+			echo "purse result:\n";
+			print_r($purse);
+			//--
+			return $purse;
 		} catch (StorageException $e) {
-			$this->purse = NULL;
+			return NULL;
+		} catch (Exception $ex) {
+			return NULL;
+		} catch (Error $er) {
+			return NULL;
 		}
 	} // User::getPurse
 	//------------------------------------------------------
@@ -745,18 +875,22 @@ class User extends Member {
 
 class Group extends Member {
 
-	function __construct($bot, $id) {
-		parent::__construct($bot, $id);
+	function __construct($id) {
+		parent::__construct($id);
 	} // Group::__construct
 	//------------------------------------------------------
 
 	protected function getName() {
 
+		$bot = Bot::getInstance();
+		if (is_null($bot))
+			throw BotException('can\'t take the Bot', 3);
+
 		// get group data
-		$data = json_decode(file_get_contents($this->bot->getAPIURL().
+		$data = json_decode(file_get_contents($bot->getAPIURL().
 			"groups.getById?group_id=".$this->id.
-			"&v=".$this->bot->getVersion().
-			"&access_token=".$this->bot->getAccessToken()), true);
+			"&v=".$bot->getVersion().
+			"&access_token=".$bot->getAccessToken()), true);
 		if (json_last_error() != JSON_ERROR_NONE)
 			throw new BotException('bad JSON from group data');
 
