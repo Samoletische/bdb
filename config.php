@@ -117,6 +117,11 @@ class Bot {
 	} // Bot::getMessage
 	//------------------------------------------------------
 
+	public function getStorage() {
+		return $this->storage;
+	} // Bot::getStorage
+	//------------------------------------------------------
+
 	public function getConf() {
 		return $this->conf;
 	} // Bot::getConf
@@ -157,9 +162,48 @@ class Bot {
 	} // Bot::insertLog
 	//------------------------------------------------------
 
-	public function query($queryStr, $unloadResult=false) {
-		return $this->storage->query($queryStr, $unloadResult);
+	public function query($queryStr, $unloadResult=false, &$error='') {
+		try {
+			$res = $this->storage->query($queryStr, $unloadResult);
+		} catch (StorageException $e) {
+			$error = $e->getMessage();
+			return NULL;
+		}
+		return $res;
 	} // Bot::query
+	//------------------------------------------------------
+
+	public function findUserByName($name, &$error='') {
+		$queryStr = "SELECT userID FROM users WHERE name LIKE '%$name%'";
+		$users = $this->query($queryStr, BotMngr::QUERY_RESULT_UNLOAD);
+		if (count($users) == 0) {
+			$error = 'no users found';
+			return NULL;
+		}
+		if (count($users) > 1) {
+			$error = 'many users found';
+			return NULL;
+		}
+		return new User($users[0]['userID']);
+	} // Bot::findUserByName
+	//------------------------------------------------------
+
+	public function getPurseStartTime(&$error='') {
+		$queryStr = 'SELECT MIN(changeDate) AS startDate FROM users';
+		$startDate = $this->query($queryStr, BotMngr::QUERY_RESULT_UNLOAD);
+		if (count($startDate) == 0) {
+			$error = 'error of purse params';
+			return NULL;
+		}
+		return $startDate[0]['startDate'];
+	} // Bot::getPurseStartTime
+	//------------------------------------------------------
+
+	public function setUserActivity($user, $active, &$error='') {
+		$queryStr = 'INSERT INTO activeUsers(dateNow, userID, active) VALUES(\''.date('Y-m-d 00:00:00').'\', '.$user->getID().', '.$active.')';
+		$res = $this->query($queryStr);
+		return ($res == NULL) ? false : true;
+	} // Bot::setUserActivity
 	//------------------------------------------------------
 
 } // Bot
@@ -258,10 +302,7 @@ abstract class Message {
 		$bot = Bot::getInstance();
 		if (is_null($bot))
 			throw BotException('can\'t take the Bot', 4);
-		//++ debug
-	  echo "making answer\n";
-	  print_r($this->content);
-	  //--
+
 		foreach ($this->content as $content) {
 
 			switch ($content['type']) {
@@ -270,17 +311,37 @@ abstract class Message {
 					break;
 				case 'message_new':
 
+					$commandFound = false;
+					$mess = mb_strtolower($content['message']);
+
+					// empty command
+					if ($mess == '') {
+						$answerContent[] = array('message' => $bot->getNoCommandMessage(), 'type' => 'message');
+						break;
+					}
+
 					// check standard commands
 					foreach ($bot->getConf()['standardCommands'] as $command) {
-						if ($command['message'] == $content['message']) {
-							foreach ($content['answer'] as $answer)
+						if ($command['message'] == $mess) {
+							//++ debug
+						  echo $command['message'].' == '.$mess."\n";
+							print_r($command);
+						  //--
+							foreach ($command['answer'] as $answer) {
+								//++ debug
+								$answer = $this->insertParams($answer);
+							  echo $answer."\n";
+							  //--
 								$answerContent[] = array('message' => $answer, 'type' => 'message');
+							}
+							$commandFound = true;
 							break;
 						}
 					}
-					//++ debug
-				  echo "standard command checked\n";
-				  //--
+
+					// check for storage exists
+					if ($bot->getStorage() == NULL)
+						$answerContent[] = array('message' => 'Есть проблемы обработки команды, обратитесь к администратору этой группы', 'type' => 'message');
 
 					// check user's purse
 					$purseID = $this->sender->getPurseID();
@@ -288,13 +349,8 @@ abstract class Message {
 						$answerContent[] = array('message' => 'у вас не подключен кошелёк, обратитесь к администратору этой группы', 'type' => 'message');
 						break;
 					}
-					//++ debug
-				  echo "user purse checked\n";
-				  //--
 
 					// check other commands
-					$mess = mb_strtolower($content['message']);
-					$commandFound = false;
 					foreach(Commands::$handlers as $handler) {
 						// вставить проверку существования метода и можно ли его запускать
 						if (Commands::$handler($this->sender, $mess, $answerContent)) {
@@ -302,12 +358,10 @@ abstract class Message {
 							break;
 						}
 					}
-					//++ debug
-				  echo "other commands checked\n";
-				  //--
+
 					if ($commandFound)
 						break;
-						
+
 					// unknown command
 					$answerContent[] = array('message' => $bot->getNoCommandMessage(), 'type' => 'message');
 
@@ -478,15 +532,37 @@ abstract class Message {
 	} // Message::makeAnswer
 	//------------------------------------------------------
 
+	private function insertParams($message) {
+
+		while (true) {
+			$indexStart = strpos($message, '{');
+			if ($indexStart == FALSE)
+				break;
+			$indexEnd = strpos($message, '}', $indexStart + 1);
+			if ($indexEnd == FALSE)
+				break;
+			$param = substr($message, $indexStart, $indexEnd - $indexStart + 1);
+			//++ debug
+			echo "param=$param\n";
+			//--
+			switch ($param) {
+				case '{senderName}':
+					$paramValue = $this->sender->getName();
+					break;
+			}
+			$message = str_replace($param, $paramValue, $message);
+		}
+
+		return $message;
+
+	} // Message::insertParams
+	//------------------------------------------------------
+
 	static function sendMessage($message, $senderID, $receiverID) {
 
 		$bot = Bot::getInstance();
 		if (is_null($bot))
 			throw BotException('can\'t take the Bot', 5);
-
-		//++ debug
-		echo "sending from $senderID to $receiverID\n";
-		//--
 
 		// send message
 		$messURL = $bot->getAPIURL().
@@ -538,17 +614,10 @@ class OutMessage extends Message {
 
 	public function send() {
 
-		//++ debug
-	  echo "answer created\n";
-	  print_r($this->content);
-	  //--
 		// sending
 		foreach ($this->content as $content) {
 			switch ($content['type']) {
 				case "message":
-					//++ debug
-					echo "sending a message: {$content['message']}\n";
-					//--
 					parent::sendMessage($content['message'], $this->sender->getID(), $this->receiver->getID());
 					break;
 				default:
@@ -571,27 +640,27 @@ class OutMessage extends Message {
 
 abstract class Commands {
 
-	static $handlers = array('entries');
+	static $handlers = array('command_entries', 'command_user');
 	//------------------------------------------------------
 
-	static function entries($sender, $in, &$out) {
+	static function command_entries($sender, $in, &$out) {
 
 		$bot = Bot::getInstance();
 		if (is_null($bot))
 			throw BotException('can\'t take the Bot', 9);
 		$isThisCase = false;
-		$parts = explode(" ", $in);
+		$parts = explode(' ', $in);
 
 		// check for this case
 		// не указан знак суммы или указан знак слитно с суммой
-		if ((float) $parts[0] != "")
+		if ((float) $parts[0] != '')
 			$isThisCase = true;
 
 		// указан знак отдельно от суммы
 		if (!$isThisCase
-	        && (($parts[0] == "-") || ($parts[0] == "+"))
+	        && (($parts[0] == '-') || ($parts[0] == '+'))
 	        && (count($parts) > 1)
-	        && ((float) ($parts[0].$parts[1]) != "")) {
+	        && ((float) ($parts[0].$parts[1]) != '')) {
       $mark = array_shift($parts);
       $parts[0] = $mark.$parts[0];
 		}
@@ -600,11 +669,8 @@ abstract class Commands {
 			return false;
 
 		// implement this case
-		//++ debug
-		echo "insert amount\n";
-		//--
 		$res = Commands::insertAmount($parts, $sender);
-    if ($res['result'] == "ok")
+    if ($res['result'] == 'ok')
     	$out[] = array('message' => $res['message'], 'type' => 'message');
     else {
     	$bot->insertLog('(005) ошибка обработки прихода/расхода: '.$res['message']);
@@ -613,7 +679,85 @@ abstract class Commands {
 
 		return true;
 
-	} // Commands::entries
+	} // Commands::command_entries
+	//------------------------------------------------------
+
+	static function command_user($sender, $in, &$out) {
+
+		$bot = Bot::getInstance();
+		if (is_null($bot))
+			throw BotException('can\'t take the Bot', 9);
+		$isThisCase = false;
+		$parts = explode(' ', $in);
+
+		// check for this case
+		if ($parts[0] == 'пользователь') {
+
+			$commandParam = NULL;
+			if (count($parts) > 1) {
+				$error = '';
+				$commandParam = $bot->findUserByName($parts[1], $error);
+				if ($error != '') {
+					$out[] = array('message' => 'Не могу распознать пользователя: '.$error, 'type' => 'message');
+					return true;
+				}
+			}
+
+			$subCommand = NULL;
+			if (count($parts) > 2) {
+				switch($parts[2]) {
+					case '+':
+						$subCommand = 1;
+						break;
+					case '-':
+						$subCommand = 2;
+						break;
+				}
+			}
+
+			$subCommandParam = '';
+			if (count($parts) > 3)
+				$subCommandParam = $parts[3];
+			if ($subCommandParam == '')
+				$subCommandParam = date('Y-m-d 00:00:00');
+
+			if ($commandParam !== NULL)
+				$isThisCase = true;
+		}
+
+		if (!$isThisCase)
+			return false;
+
+		// implement this case
+		switch ($subCommand) {
+			case NULL:
+				$out[] = array('message' => 'Здесь будет информация по пользователю '.$commandParam->getName(), 'type' => 'message');
+				break;
+			case 1: // set activity of user
+			case 2: // set deactivity of user
+				$startTime = $bot->getPurseStartTime();
+				$lastTime = date('Y-m-d 00:00:00');
+				//++ debug
+				echo "start time = $startTime, param time = $subCommandParam, last time = $lastTime\n";
+				//--
+				if (($startTime <= $subCommandParam) && ($subCommandParam <= $lastTime)) {
+					if ($bot->setUserActivity($commandParam, $subCommand == 1)) {
+						$res = ($subCommand == 1) ? 'подключен' : 'отключен';
+						$out[] = array('message' => 'Пользователь '.$commandParam->getName().' успешно '.$res.' датой '.$subCommandParam, 'type' => 'message');
+					}
+					else
+						$out[] = array('message' => 'Произошла ошибка при подключении/отключении пользователя к/от кошельку(а)', 'type' => 'message');
+				}
+				else
+					$out[] = array('message' => 'Указанная дата не входит в период существования кошелька', 'type' => 'message');
+				break;
+			default:
+				$out[] = array('message' => 'Не указана команда для действий с пользователем '.$commandParam->getName(), 'type' => 'message');
+		}
+
+		return true;
+
+	} // Commands::command_user
 	//------------------------------------------------------
 
 	static function getAccount($acc, $mayGetAll=false) {
@@ -630,13 +774,7 @@ abstract class Commands {
 				return $result;
 
 			$queryStr = "SELECT id, title FROM accounts WHERE title LIKE '%$acc%' ORDER BY title";
-			//++ debug
-			echo "query='$queryStr'\n";
-			//--
 			$query = $bot->query($queryStr);
-			//++ debug
-			echo "query is good\n";
-			//--
 			switch ($query->num_rows) {
 				case 0:
 				 	$result['result'] = 'no';
@@ -681,9 +819,6 @@ abstract class Commands {
 		$amount = (float) ($amount / 100);
 
 		try {
-			//++ debug
-			echo "amount=$amount\n";
-			//--
 			$account = Commands::getAccount(count($parts) > 1 ? $parts[1] : '');
 			$bot->insertLog("accountResult=". $account['result'], true);
 
@@ -695,9 +830,6 @@ abstract class Commands {
 			if (substr($parts[0], 0, 1) == "-")
 				$motion = "0";
 
-			//++ debug
-			echo "account={$account['result']}, comment=$comment, motion=$motion\n";
-			//--
 			$queryStr="
 				INSERT INTO
 					purse(period
@@ -715,9 +847,6 @@ abstract class Commands {
 					,'".$comment."'
 					,".$sender->getID()."
 					,".$sender->getPurseID().")";
-			//++ debug
-			echo "query for insert: $queryStr\n";
-			//--
 			$query = $bot->query($queryStr);
 
 			if ($motion == 0) {
@@ -765,7 +894,7 @@ abstract class Member {
 
 	function __construct($id) {
 		$this->id = $id;
-		$this->name = $this->getName();
+		$this->name = $this->getNameFromAPI();
 	} // Member:__construct
 	//------------------------------------------------------
 
@@ -779,13 +908,18 @@ abstract class Member {
 	} // Member::getID
 	//------------------------------------------------------
 
+	public function getName() {
+		return $this->name;
+	} // Member::getName
+	//------------------------------------------------------
+
 	public function isOur() {
 		// check member for exists in data base
 		throw new BotException('no body of isOur');
 	} // Member::isOur
 	//------------------------------------------------------
 
-	abstract protected function getName();
+	abstract protected function getNameFromAPI();
 
 } // Member
 //------------------------------------------------------
@@ -806,7 +940,7 @@ class User extends Member {
 	} // User::getPurseID
 	//------------------------------------------------------
 
-	protected function getName() {
+	protected function getNameFromAPI() {
 
 		$bot = Bot::getInstance();
 		if (is_null($bot))
@@ -832,33 +966,21 @@ class User extends Member {
 
 		return $data['response'][0]['first_name'];
 
-	} // User::getName
+	} // User::getNameFromAPI
 	//------------------------------------------------------
 
 	private function getPurse() {
+
 		$bot = Bot::getInstance();
 		if (is_null($bot))
 			throw BotException('can\'t take the Bot', 2);
 		$queryStr = "SELECT * FROM users WHERE userID={$this->id}";
-		//++ debug
-		echo "get purse query: $queryStr\n";
-		//--
+
 		try {
 			$query = $bot->query($queryStr, BotMngr::QUERY_RESULT_UNLOAD);
-			//++ debug
-			echo "count of purse result: ".count($query)."\n";
-			//--
-			if (count($query) == 0) {
-				//++ debug
-				echo "return from get purse\n";
-				//--
+			if (count($query) == 0)
 				return NULL;
-			}
 			$purse = $query[0];
-			//++ debug
-			echo "purse result:\n";
-			print_r($purse);
-			//--
 			return $purse;
 		} catch (StorageException $e) {
 			return NULL;
@@ -867,6 +989,7 @@ class User extends Member {
 		} catch (Error $er) {
 			return NULL;
 		}
+
 	} // User::getPurse
 	//------------------------------------------------------
 
@@ -880,7 +1003,7 @@ class Group extends Member {
 	} // Group::__construct
 	//------------------------------------------------------
 
-	protected function getName() {
+	protected function getNameFromAPI() {
 
 		$bot = Bot::getInstance();
 		if (is_null($bot))
@@ -906,7 +1029,7 @@ class Group extends Member {
 
 		return $data['response'][0]['name'];
 
-	} // Group::getName
+	} // Group::getNameFromAPI
 	//------------------------------------------------------
 
 } // Group
