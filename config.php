@@ -175,7 +175,7 @@ class Bot {
 
 	public function findUserByName($name, &$error='') {
 		$queryStr = "SELECT userID FROM users WHERE name LIKE '%$name%'";
-		$users = $this->query($queryStr, BotMngr::QUERY_RESULT_UNLOAD);
+		$users = $this->query($queryStr, BotMngr::QUERY_RESULT_UNLOAD, $error);
 		if (count($users) == 0) {
 			$error = 'no users found';
 			return NULL;
@@ -190,7 +190,7 @@ class Bot {
 
 	public function getPurseStartTime(&$error='') {
 		$queryStr = 'SELECT MIN(changeDate) AS startDate FROM users';
-		$startDate = $this->query($queryStr, BotMngr::QUERY_RESULT_UNLOAD);
+		$startDate = $this->query($queryStr, BotMngr::QUERY_RESULT_UNLOAD, $error);
 		if (count($startDate) == 0) {
 			$error = 'error of purse params';
 			return NULL;
@@ -201,9 +201,22 @@ class Bot {
 
 	public function setUserActivity($user, $active, &$error='') {
 		$queryStr = 'INSERT INTO activeUsers(dateNow, userID, active) VALUES(\''.date('Y-m-d 00:00:00').'\', '.$user->getID().', '.$active.')';
-		$res = $this->query($queryStr);
+		$res = $this->query($queryStr, $error);
 		return ($res == NULL) ? false : true;
 	} // Bot::setUserActivity
+	//------------------------------------------------------
+
+	public function addMoneyOnUserPurse($user, $amount, $account, $comment, &$error='') {
+		$motion = $amount > 0 ? 1 : 0;
+		$userID = $user->getID();
+		$queryStr = "INSERT INTO purse(purseID, period, motion, amount, account, comment, userID)
+			VALUES((SELECT purseID FROM users WHERE userID=$userID), '".date('Y-m-d 00:00:00')."', $motion, $amount, $account, '$comment', $userID)";
+		//++ debug
+		echo $queryStr."\n";
+		//--
+		$res = $this->query($queryStr, $error);
+		return ($res == NULL) ? false : true;
+	} // Bot::addMoneyOnUserPurse
 	//------------------------------------------------------
 
 } // Bot
@@ -697,7 +710,7 @@ abstract class Commands {
 			if (count($parts) > 1) {
 				$error = '';
 				$commandParam = $bot->findUserByName($parts[1], $error);
-				if ($error != '') {
+				if ((is_null($commandParam)) || ($error != '') || (!$commandParam instanceof Member)) {
 					$out[] = array('message' => 'Не могу распознать пользователя: '.$error, 'type' => 'message');
 					return true;
 				}
@@ -712,14 +725,29 @@ abstract class Commands {
 					case '-':
 						$subCommand = 2;
 						break;
+					case 'депозит':
+						$subCommand = 3;
+						break;
 				}
 			}
 
 			$subCommandParam = '';
 			if (count($parts) > 3)
 				$subCommandParam = $parts[3];
-			if ($subCommandParam == '')
-				$subCommandParam = date('Y-m-d 00:00:00');
+			if (($subCommand == 3) && ((float) $subCommandParam == 0)) {
+				$out[] = array('message' => 'Необходимо ввести сумму, на которую пополняется депозит', 'type' => 'message');
+				return true;
+			}
+			if ($subCommandParam == '') {
+				if (($subCommand == 1) || ($subCommand == 2))
+					$subCommandParam = date('Y-m-d 00:00:00');
+			}
+
+			$comment = '';
+			if (count($parts) > 4) {
+				$start = strlen($parts[0]) + strlen($parts[1]) + strlen($parts[2]) + strlen($parts[3]) + 4;
+				$comment = substr(implode(" ", $parts), $start);
+			}
 
 			if ($commandParam !== NULL)
 				$isThisCase = true;
@@ -737,19 +765,36 @@ abstract class Commands {
 			case 2: // set deactivity of user
 				$startTime = $bot->getPurseStartTime();
 				$lastTime = date('Y-m-d 00:00:00');
-				//++ debug
-				echo "start time = $startTime, param time = $subCommandParam, last time = $lastTime\n";
-				//--
+				$error = '';
 				if (($startTime <= $subCommandParam) && ($subCommandParam <= $lastTime)) {
-					if ($bot->setUserActivity($commandParam, $subCommand == 1)) {
+					if ($bot->setUserActivity($commandParam, ($subCommand == 1) ? 1 : 0, $error)) {
 						$res = ($subCommand == 1) ? 'подключен' : 'отключен';
 						$out[] = array('message' => 'Пользователь '.$commandParam->getName().' успешно '.$res.' датой '.$subCommandParam, 'type' => 'message');
 					}
 					else
-						$out[] = array('message' => 'Произошла ошибка при подключении/отключении пользователя к/от кошельку(а)', 'type' => 'message');
+						$out[] = array('message' => 'Произошла ошибка при подключении/отключении пользователя к/от кошельку(а): '.$error, 'type' => 'message');
 				}
 				else
 					$out[] = array('message' => 'Указанная дата не входит в период существования кошелька', 'type' => 'message');
+				break;
+			case 3:
+				$error = '';
+				$conf = $bot->getConf();
+				if (!array_key_exists('defaultIncomeAccount', $conf)) {
+					$out[] = array('message' => 'Не настроена статья по-умолчанию, обратитесь к администратору этой группы', 'type' => 'message');
+					break;
+				}
+				$result = Commands::getAccount($conf['defaultIncomeAccount']);
+				if ($result['result'] == 'ok')
+					$account = $result['id'];
+				else {
+					$out[] = array('message' => 'Не могу определить статью по-умолчанию, обратитесь к администратору этой группы', 'type' => 'message');
+					break;
+				}
+				if ($bot->addMoneyOnUserPurse($commandParam, $subCommandParam, $account, $comment, $error))
+					$out[] = array('message' => 'Депозит пользователя '.$commandParam->getName().' успешно изменён на сумму '.$subCommandParam.' руб.', 'type' => 'message');
+				else
+					$out[] = array('message' => 'Произошла ошибка при изменении депозита пользователя '.$commandParam->getName().': '.$error, 'type' => 'message');
 				break;
 			default:
 				$out[] = array('message' => 'Не указана команда для действий с пользователем '.$commandParam->getName(), 'type' => 'message');
@@ -833,7 +878,7 @@ abstract class Commands {
 			$queryStr="
 				INSERT INTO
 					purse(period
-						,moition
+						,motion
 						,amount
 						,account
 						,comment
@@ -1267,8 +1312,8 @@ class Group extends Member {
 // 			$periodEnd = date('Y-m-t 23:59:59');
 //
 // 			$queryStr = "SELECT SUM(IFNULL(amount, 0)) AS startBalance FROM purse WHERE purseID = $purseID AND period < '".$periodStart."';
-// 				SELECT SUM(amount) AS income FROM purse WHERE purseID = $purseID AND moition = 1 AND period >= '".$periodStart."' AND period <= '".$periodEnd."';
-// 				SELECT SUM(amount) AS expense FROM purse WHERE purseID = $purseID AND moition = 0 AND period >= '".$periodStart."' AND period <= '".$periodEnd."'";
+// 				SELECT SUM(amount) AS income FROM purse WHERE purseID = $purseID AND motion = 1 AND period >= '".$periodStart."' AND period <= '".$periodEnd."';
+// 				SELECT SUM(amount) AS expense FROM purse WHERE purseID = $purseID AND motion = 0 AND period >= '".$periodStart."' AND period <= '".$periodEnd."'";
 // 			//$this->insertLog($queryStr."<br/>", true);
 // 			$query = $this->db->multi_query($queryStr);
 // 			if (!$query)
@@ -1359,7 +1404,7 @@ class Group extends Member {
 //
 // 	private function insertAmount($parts, $purseID) {
 // 		$result = array( 'result' => 'ok', 'message' => '');
-// 		$moition = "1";
+// 		$motion = "1";
 //
 // 		$amount = (float) $parts[0];
 // 		$amount = (int) ($amount * 100);
@@ -1375,11 +1420,11 @@ class Group extends Member {
 // 			$comment = strlen($comment) <= 300 ? $comment : substr($comment, 300);
 //
 // 			if (substr($parts[0], 0, 1) == "-")
-// 				$moition = "0";
+// 				$motion = "0";
 // 			$query = $this->db->query("
 // 				INSERT INTO
 // 					purse(period
-// 						,moition
+// 						,motion
 // 						,amount
 // 						,account
 // 						,comment
@@ -1387,7 +1432,7 @@ class Group extends Member {
 // 						,purseID
 // 					)
 // 				VALUES('".date("Y-m-d H:i:s")."'
-// 					,".$moition."
+// 					,".$motion."
 // 					,".$amount."
 // 					,'".$account['id']."'
 // 					,'".$comment."'
@@ -1396,7 +1441,7 @@ class Group extends Member {
 // 			if (!$query)
 // 				throw new Exception('');
 //
-// 			if ($moition == 0) {
+// 			if ($motion == 0) {
 // 				$result['message'] = 'расход';
 // 				$amount = 0 - $amount;
 // 			}

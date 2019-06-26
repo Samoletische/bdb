@@ -16,6 +16,7 @@
     "dbUser": "bdb",
     "dbPassword": "8d8"
   },
+  "defaultIncomeAccount": "депозит",
   "standardCommands": [
     {
       "message": "ты живой?",
