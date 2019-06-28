@@ -17,6 +17,7 @@
     "dbPassword": "8d8"
   },
   "defaultIncomeAccount": "депозит",
+  "devideForAll": false,
   "standardCommands": [
     {
       "message": "ты живой?",

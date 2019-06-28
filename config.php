@@ -12,7 +12,7 @@ abstract class BotMngr {
 
 	static private $requiredFields = array(
 		'testMode', 'mainInput', 'testInput', 'accessToken', 'groupToken', 'confirmToken', 'groupID', 'APIURL', 'version',
-		'waitCommandTimeOut', 'storageMode', 'storageParams', 'standardCommands'
+		'waitCommandTimeOut', 'storageMode', 'storageParams', 'standardCommands', 'defaultIncomeAccount', 'devideForAll'
 	);
 	//------------------------------------------------------
 
@@ -219,6 +219,28 @@ class Bot {
 	} // Bot::addMoneyOnUserPurse
 	//------------------------------------------------------
 
+	public function getActiveUsers() {
+		$queryStr = 'SELECT
+				activeU.activateDate,
+				users.userID,
+			    users.purseID
+			FROM
+			    (SELECT
+			        max(dateNow) AS activateDate,
+			        userID
+			    FROM `activeUsers`
+			    GROUP BY userID) AS activeU
+			    INNER JOIN activeUsers
+						ON activeUsers.dateNow = activeU.activateDate AND activeUsers.userID = activeU.userID
+					INNER JOIN users
+						ON users.userID=activeU.userID
+			WHERE
+				activeUsers.active=1';
+		$res = $this->query($queryStr, BotMngr::QUERY_RESULT_UNLOAD);
+		return $res;
+	} // Bot::getActiveUsers
+	//------------------------------------------------------
+
 } // Bot
 //------------------------------------------------------
 
@@ -288,9 +310,10 @@ class StorageMySQL {
 		try {
 			if (is_null($this->db))
 				throw new StorageException('no storage exists: ');
-			$query = $this->db->query($queryStr);
+			$query = $this->db->multi_query($queryStr);
 			if (!$query)
 				throw new Exception($this->db->error);
+			$query = $this->db->store_result();
 			return $unloadResult ? $query->fetch_all(MYSQLI_ASSOC) : $query;
 		} catch (Exception $e) {
 			throw new StorageException('exception in db query: '.$e->getMessage());
@@ -867,32 +890,77 @@ abstract class Commands {
 			$account = Commands::getAccount(count($parts) > 1 ? $parts[1] : '');
 			$bot->insertLog("accountResult=". $account['result'], true);
 
+			$date = date("Y-m-d H:i:s");
+
 			$start = strlen($parts[0]) + ($account['result'] == 'ok' ? strlen($parts[1]) + 2 : 1);
 			$bot->insertLog("start=".$start, true);
 			$comment = substr(implode(" ", $parts), $start);
 			$comment = strlen($comment) <= 300 ? $comment : substr($comment, 300);
 
-			if (substr($parts[0], 0, 1) == "-")
-				$motion = "0";
+			if ($bot->getConf()['devideForAll']) { // devide for all active users
+				$users = $bot->getActiveUsers();
+				if (is_null($users))
+					throw new Exception('Can\'t response active users');
+				$userCount = count($users);
+				$amountForDevide = $amount;
+				//++ debug
+				echo "amountForDevide=$amountForDevide\n";
+				//--
+				$queryStr = '';
+				foreach ($users as $user) {
+					$amountForOne = round($amountForDevide / $userCount, 2);
+					//++ debug
+					echo "userCount=$userCount - amountForDevide=$amountForDevide - amountForOne=$amountForOne\n";
+					//--
+					$queryStr .= "
+						INSERT INTO
+							purse(period
+								,motion
+								,amount
+								,account
+								,comment
+								,userID
+								,purseID
+							)
+						VALUES('".$date."'
+							,".$motion."
+							,".$amountForOne."
+							,'".$account['id']."'
+							,'".$comment."'
+							,".$user['userID']."
+							,".$user['purseID'].");";
 
-			$queryStr="
-				INSERT INTO
-					purse(period
-						,motion
-						,amount
-						,account
-						,comment
-						,userID
-						,purseID
-					)
-				VALUES('".date("Y-m-d H:i:s")."'
-					,".$motion."
-					,".$amount."
-					,'".$account['id']."'
-					,'".$comment."'
-					,".$sender->getID()."
-					,".$sender->getPurseID().")";
-			$query = $bot->query($queryStr);
+					$amountForDevide -= $amountForOne;
+					$userCount--;
+				}
+			}
+			else { // expense hole amount from purse of sender user
+
+				if (substr($parts[0], 0, 1) == "-")
+					$motion = "0";
+
+				$queryStr="
+					INSERT INTO
+						purse(period
+							,motion
+							,amount
+							,account
+							,comment
+							,userID
+							,purseID
+						)
+					VALUES('".$date."'
+						,".$motion."
+						,".$amount."
+						,'".$account['id']."'
+						,'".$comment."'
+						,".$sender->getID()."
+						,".$sender->getPurseID().")";
+			}
+			//++ debug
+			echo $queryStr."\n";
+			//--
+			$bot->query($queryStr);
 
 			if ($motion == 0) {
 				$result['message'] = 'расход';
