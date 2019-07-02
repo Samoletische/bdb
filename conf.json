@@ -18,6 +18,8 @@
   },
   "defaultIncomeAccount": "депозит",
   "devideForAll": false,
+  "purseCommon": false,
+  "purseProtect": false,
   "standardCommands": [
     {
       "message": "ты живой?",
