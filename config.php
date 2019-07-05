@@ -6,8 +6,8 @@ class StorageException extends Exception {} // StorageException
 
 abstract class BotMngr {
 
-	public const QUERY_RESULT_UNLOAD = true;
-	public const QUERY_RESULT_CHOOSE = false;
+	const QUERY_RESULT_UNLOAD = true;
+	const QUERY_RESULT_CHOOSE = false;
 	//------------------------------------------------------
 
 	static private $requiredFields = array(
@@ -104,20 +104,35 @@ class Bot {
 			throw new BotException('bad JSON in input');
 
 		// check for nessesary fields (level 1)
-		$requiredFields = array('object', 'type');
+		$requiredFields = array('type');
 		$firstKeyNotExists = '';
 		if (!BotMngr::array_keys_exists($requiredFields, $data, $firstKeyNotExists))
 			throw new BotException('not all required fields exists in input data, not exists \''.$firstKeyNotExists.'\'');
+		if ($data->type == 'confirmation')
+			$requiredFields[] = 'group_id';
+		else
+			$requiredFields[] = 'object';
+		if (!BotMngr::array_keys_exists($requiredFields, $data, $firstKeyNotExists))
+			throw new BotException('not all required fields exists in input data, not exists \''.$firstKeyNotExists.'\'');
 		// check for nessesary fields (level 2)
-		$requiredFields = array('body', 'user_id');
-		if (!BotMngr::array_keys_exists($requiredFields, $data->object, $firstKeyNotExists))
-			throw new BotException('not all required fields exists in input subdata, not exists \''.$firstKeyNotExists.'\'');
+		if ($data->type != 'confirmation') {
+			$requiredFields = array('body', 'user_id');
+			if (!BotMngr::array_keys_exists($requiredFields, $data->object, $firstKeyNotExists))
+				throw new BotException('not all required fields exists in input subdata, not exists \''.$firstKeyNotExists.'\'');
 
-		// remember current user
-		$this->user = Member::getMember(false, $data->object->user_id);
+			// remember current user
+			$this->user = Member::getMember(false, $data->object->user_id);
 
-		// create object
-		return new InMessage(array(array('message' => $data->object->body, 'type' => $data->type)), $this->user, Member::getMember(true, $this->conf['groupID']));
+			// create object
+			return new InMessage(array(array('message' => $data->object->body, 'type' => $data->type)), $this->user, Member::getMember(true, $this->conf['groupID']));
+		}
+		else {
+			// remember current user
+			$this->user = Member::getMember(true, $this->conf['groupID']);
+
+			// create object
+			return new InMessage(array(array('message' => $data->group_id, 'type' => $data->type)), $this->user, $this->user);
+		}
 
 	} // Bot::getMessage
 	//------------------------------------------------------
@@ -145,6 +160,11 @@ class Bot {
 	public function getAccessToken() {
 		return $this->conf['accessToken'];
 	} // Bot::getAccessToken
+	//------------------------------------------------------
+
+	public function getConfirmToken() {
+		return $this->conf['confirmToken'];
+	} // Bot::getConfirmToken
 	//------------------------------------------------------
 
 	public function getVersion() {
@@ -187,9 +207,6 @@ class Bot {
 
 	public function isRole($role, $userID) {
 		$queryStr = "SELECT userRoles.roleID FROM userRoles INNER JOIN roles ON roles.id=userRoles.roleID WHERE userRoles.userID=$userID AND roles.name='$role'";
-		//++ debug
-		echo $queryStr."\n";
-		//--
 		$query = $this->query($queryStr, BotMngr::QUERY_RESULT_CHOOSE);
 		return $query->num_rows > 0;
 	} // Bot::isAdmin
@@ -235,9 +252,6 @@ class Bot {
 		$userID = $user->getID();
 		$queryStr = "INSERT INTO purse(purseID, period, motion, amount, account, comment, userID)
 			VALUES((SELECT purseID FROM users WHERE userID=$userID), '".$date."', $motion, $amount, $account, '$comment', $userID)";
-		//++ debug
-		echo $queryStr."\n";
-		//--
 		$res = $this->query($queryStr, $error);
 		return ($res == NULL) ? false : true;
 	} // Bot::changeDeposit
@@ -270,9 +284,6 @@ class Bot {
 	public function getBalance($date, $purseID) {
 		$date = is_null($date) ? date('Y-m-d H:i:s') : $date;
 		$queryStr = "SELECT SUM(amount) AS balance FROM purse WHERE purseID=$purseID AND period<='$date'";
-		//++ debug
-		echo "$queryStr\n";
-		//--
 		$res = $this->query($queryStr, BotMngr::QUERY_RESULT_UNLOAD);
 		if (count($res) == 0)
 			return 0;
@@ -282,9 +293,6 @@ class Bot {
 
 	public function getIncome($periodStart, $periodEnd, $purseID) {
 		$queryStr = "SELECT SUM(amount) AS income FROM purse WHERE purseID=$purseID AND motion=1 AND period>='$periodStart' AND period<='$periodEnd'";
-		//++ debug
-		echo "$queryStr\n";
-		//--
 		$res = $this->query($queryStr, BotMngr::QUERY_RESULT_UNLOAD);
 		if (count($res) == 0)
 			return 0;
@@ -294,9 +302,6 @@ class Bot {
 
 	public function getExpense($periodStart, $periodEnd, $purseID) {
 		$queryStr = "SELECT SUM(amount) AS expense FROM purse WHERE purseID=$purseID AND motion=0 AND period>='$periodStart' AND period<='$periodEnd'";
-		//++ debug
-		echo "$queryStr\n";
-		//--
 		$res = $this->query($queryStr, BotMngr::QUERY_RESULT_UNLOAD);
 		if (count($res) == 0)
 			return 0;
@@ -406,7 +411,7 @@ abstract class Message {
 
 			switch ($content['type']) {
 				case 'confirmation':
-					$answerContent[] = array('message' => $bot->getConfirmToken(), 'type' => 'message');
+					$answerContent[] = array('message' => $bot->getConfirmToken(), 'type' => 'confirmation');
 					break;
 				case 'message_new':
 
@@ -420,17 +425,10 @@ abstract class Message {
 					}
 
 					// check standard commands
-					foreach ($bot->getConf()['standardCommands'] as $command) {
+					$conf = $bot->getConf();
+					foreach ($conf['standardCommands'] as $command) {
 						if ($command['message'] == $mess) {
-							//++ debug
-						  echo $command['message'].' == '.$mess."\n";
-							print_r($command);
-						  //--
 							foreach ($command['answer'] as $answer) {
-								//++ debug
-								$answer = $this->insertParams($answer);
-							  echo $answer."\n";
-							  //--
 								$answerContent[] = array('message' => $answer, 'type' => 'message');
 							}
 							$commandFound = true;
@@ -641,9 +639,6 @@ abstract class Message {
 			if ($indexEnd == FALSE)
 				break;
 			$param = substr($message, $indexStart, $indexEnd - $indexStart + 1);
-			//++ debug
-			echo "param=$param\n";
-			//--
 			switch ($param) {
 				case '{senderName}':
 					$paramValue = $this->sender->getName();
@@ -671,6 +666,13 @@ abstract class Message {
 			"&v=".$bot->getVersion().
 			"&access_token=".$bot->getGroupToken();
 		$request = file_get_contents($messURL); // still without post-обработки ))
+
+		echo "ok";
+
+		// success answer:
+		// {"response":34}
+		// error answer:
+		//{"error":{"error_code":5,"error_msg":"User authorization failed: no access_token passed.","request_params":[{"key":"user_id","value":"432201510"},{"key":"group_id","value":"184068927"},{"key":"v","value":"5.50"},{"key":"access_token1","value":"4c1676e87257d06b8be701735285527381d83f5a0079f965b8cd81f78af74b50c5044d58c949dc6900adf"},{"key":"method","value":"messages.send"},{"key":"oauth","value":"1"}]}}
 
 	} // Message::sendMessage
 	//------------------------------------------------------
@@ -716,6 +718,9 @@ class OutMessage extends Message {
 		// sending
 		foreach ($this->content as $content) {
 			switch ($content['type']) {
+				case "confirmation":
+					echo $content['message'];
+					break;
 				case "message":
 					parent::sendMessage($content['message'], $this->sender->getID(), $this->receiver->getID());
 					break;
@@ -796,21 +801,16 @@ abstract class Commands {
 		// implement this case
 		try {
 			$date = is_null($operationDate) ? date('Y-m-d H:i:s') : $operationDate;
-			if ($bot->getConf()['devideForAll']) { // devide for all active users
+			$conf = $bot->getConf();
+			if ($conf['devideForAll']) { // devide for all active users
 				$users = $bot->getActiveUsers($date);
 				if (is_null($users))
 					throw new Exception('Can\'t response active users');
 				$userCount = count($users);
 				$amountForDevide = $amount;
-				//++ debug
-				echo "amountForDevide=$amountForDevide\n";
-				//--
 				$queryStr = '';
 				foreach ($users as $user) {
 					$amountForOne = round($amountForDevide / $userCount, 2);
-					//++ debug
-					echo "userCount=$userCount - amountForDevide=$amountForDevide - amountForOne=$amountForOne\n";
-					//--
 					$queryStr .= "
 						INSERT INTO
 							purse(period
@@ -853,9 +853,6 @@ abstract class Commands {
 						,".$sender->getID()."
 						,".$sender->getPurseID().")";
 			}
-			//++ debug
-			echo $queryStr."\n";
-			//--
 			$bot->query($queryStr);
 
 			$message = '';
@@ -982,11 +979,8 @@ abstract class Commands {
 			case 1: // set activity of user
 			case 2: // set deactivity of user
 				$startTime = $bot->getPurseStartTime();
-				$lastTime = date('Y-m-d 00:00:00');
+				$lastTime = date('Y-m-d 23:59:59');
 				$error = '';
-				//++ debug
-				echo "$startTime <= $date <= $lastTime\n";
-				//--
 				if (($startTime <= $date) && ($date <= $lastTime)) {
 					if ($bot->setUserActivity($user, ($subCommand == 1) ? 1 : 0, $date, $error)) {
 						$res = ($subCommand == 1) ? 'подключен' : 'отключен';

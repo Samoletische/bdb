@@ -16,3 +16,16 @@
   - добавить команду "Операции" (с группировкой по времени, статье, комменту)
   - после запуска релиза актуализировать документацию
 - setUserActivity возвращает ошибку, хотя выполняет
+
+
+- создание бота:
+	- создал приватную группу в ВК - ФрутоРадуга (club184068927, group_id=184068927)
+	- в управлении API создал ключ - 4c1676e87257d06b8be701735285527381d83f5a0079f965b8cd81f78af74b50c5044d58c949dc6900adf
+	- указываем адрес бота - http://cr97917.tmweb.ru/frura_bot/bot.php (confirmation=94d549c5)
+	- создаём standalone-приложение на https://vk.com/dev (id=7043469)
+	- включаем "Работа с API". Указываем адрес http
+	- для получения токена переходим по ссылке https://oauth.vk.com/authorize?client_id=7043469&display=page&redirect_uri=https://oauth.vk.com/blank.html&scope=friends,photos,audio,video,status,messages,wall,groups,offline,stats,email&response_type=token&v=5.63
+	(прим. messages с запятой убираем)
+	- получаем ответный токен - https://oauth.vk.com/blank.html#access_token=c1c54ca3eec1c6d97871e828b43d9fbc4be3ae939f0012af589382cb18f2037c3eeb77a898be18e8ff42c&expires_in=0&user_id=432201510
+	а точнее сам токен - c1c54ca3eec1c6d97871e828b43d9fbc4be3ae939f0012af589382cb18f2037c3eeb77a898be18e8ff42c
+  8c785675048b79d4770a1c5275b4986efeddfa31b96a2d33110d2e8025c9fddb7b3393541c6afdf6022b9
