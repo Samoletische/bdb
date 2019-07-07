@@ -1,5 +1,7 @@
 <?php
 
+const DEBUG = true;
+
 class BotException extends Exception {} // BotException
 class StorageException extends Exception {} // StorageException
 //------------------------------------------------------
@@ -183,13 +185,24 @@ class Bot {
 	//------------------------------------------------------
 
 	public function insertLog($message, $debug=false) {
-		$this->storage->insertLog($message, $debug);
+		if ($debug && ($this->conf['testMode']))
+			echo "log: $message\n";
+		else
+			$this->storage->insertLog($message, $debug);
 	} // Bot::insertLog
 	//------------------------------------------------------
 
 	public function query($queryStr, $unloadResult=false, &$error='') {
 		try {
 			$res = $this->storage->query($queryStr, $unloadResult);
+			if (!$unloadResult) {
+				$queryStrLowerCase = mb_strtolower($queryStr);
+				$insertExists = !(strpos($queryStrLowerCase, 'insert') === FALSE);
+				$updateExists = !(strpos($queryStrLowerCase, 'update') === FALSE);
+				$deleteExists = !(strpos($queryStrLowerCase, 'delete') === FALSE);
+				if ($insertExists || $updateExists || $deleteExists)
+					$res = true;
+			}
 		} catch (StorageException $e) {
 			$error = $e->getMessage();
 			return NULL;
@@ -240,8 +253,16 @@ class Bot {
 
 	public function setUserActivity($user, $active, $date=NULL, &$error='') {
 		$date = is_null($date) ? date('Y-m-d H:i:s') : $date;
-		$queryStr = 'INSERT INTO activeUsers(dateNow, userID, active) VALUES(\''.$date.'\', '.$user->getID().', '.$active.')';
-		$res = $this->query($queryStr, $error);
+		$userID = $user->getID();
+		$activated = $this->isUserActive($userID, $date) ? 1 : 0;
+		if ($activated != $active) {
+			$queryStr = "INSERT INTO activeUsers(dateNow, userID, active) VALUES('$date', $userID, $active)";
+			$res = $this->query($queryStr, BotMngr::QUERY_RESULT_CHOOSE, $error);
+		}
+		else {
+			$error = 'пользователь \''.$user->getName().'\' уже '.($active == 1 ? 'активирован' : 'деактивирован');
+			$res = NULL;
+		}
 		return ($res == NULL) ? false : true;
 	} // Bot::setUserActivity
 	//------------------------------------------------------
@@ -252,7 +273,7 @@ class Bot {
 		$userID = $user->getID();
 		$queryStr = "INSERT INTO purse(purseID, period, motion, amount, account, comment, userID)
 			VALUES((SELECT purseID FROM users WHERE userID=$userID), '".$date."', $motion, $amount, $account, '$comment', $userID)";
-		$res = $this->query($queryStr, $error);
+		$res = $this->query($queryStr, BotMngr::QUERY_RESULT_CHOOSE, $error);
 		return ($res == NULL) ? false : true;
 	} // Bot::changeDeposit
 	//------------------------------------------------------
@@ -262,7 +283,8 @@ class Bot {
 		$queryStr = "SELECT
 				activeU.activateDate,
 				users.userID,
-				users.purseID
+				users.purseID,
+				users.name
 			FROM
 			    (SELECT
 			        MAX(dateNow) AS activateDate,
@@ -281,7 +303,62 @@ class Bot {
 	} // Bot::getActiveUsers
 	//------------------------------------------------------
 
-	public function getBalance($date, $purseID) {
+	public function getAllUsers($date=NULL) {
+		$date = is_null($date) ? date('Y-m-d H:i:s') : $date;
+		$queryStr = "SELECT userID, name FROM users";
+		$res = $this->query($queryStr, BotMngr::QUERY_RESULT_UNLOAD);
+		return $res;
+	} // Bot::getAllUsers
+	//------------------------------------------------------
+
+	public function isUserActive($userID, $date=NULL) {
+		$date = is_null($date) ? date('Y-m-d H:i:s') : $date;
+		$queryStr = "SELECT DISTINCT
+				1
+			FROM
+			    (SELECT
+			        MAX(dateNow) AS activateDate,
+			        userID
+			    FROM activeUsers
+					WHERE dateNow <= '$date' AND userID=$userID
+			    GROUP BY userID) AS activeU
+			    INNER JOIN activeUsers
+						ON activeUsers.dateNow = activeU.activateDate AND activeUsers.userID = activeU.userID
+			WHERE
+				activeUsers.active=1";
+		$res = $this->query($queryStr, BotMngr::QUERY_RESULT_UNLOAD);
+		return count($res) == 0 ? false : true;
+	} // Bot::getActiveUsers
+	//------------------------------------------------------
+
+	public function getOperations($date=NULL, $purseID) {
+		$date = is_null($date) ? date('Y-m-d') : $date;
+		$dt = explode(' ', $date);
+		$dateS = $dt[0].' 00:00:00';
+		$dateE = $dt[0].' 23:59:59';
+		$queryStr = "SELECT
+				accounts.title AS account,
+				SUM(purse.amount) AS amount,
+				purse.comment AS comment
+			FROM
+				purse
+				LEFT JOIN accounts ON accounts.id=purse.account
+				LEFT JOIN users ON users.userID=purse.userID
+			WHERE
+				purse.period >= '$dateS' AND purse.period <= '$dateE'
+				AND purse.purseID
+			GROUP BY
+				purse.period,
+				purse.account,
+				purse.comment";
+		$this->insertLog($queryStr, DEBUG);
+		$res = $this->query($queryStr, BotMngr::QUERY_RESULT_UNLOAD);
+		return $res;
+	}
+	// Bot::getOperations
+ //------------------------------------------------------
+
+	public function getBalance($date=NULL, $purseID) {
 		$date = is_null($date) ? date('Y-m-d H:i:s') : $date;
 		$queryStr = "SELECT SUM(amount) AS balance FROM purse WHERE purseID=$purseID AND period<='$date'";
 		$res = $this->query($queryStr, BotMngr::QUERY_RESULT_UNLOAD);
@@ -367,8 +444,7 @@ class StorageMySQL {
 
 	public function insertLog($message, $debug=false) {
 		try {
-			if (!$debug || $this->testMode)
-				$this->db->query("INSERT INTO logs(message, debug, dateNow) VALUES('$message', '".($debug ? 1 : 0)."', '".date('Y-m-d H:i:s')."')");
+			$this->db->query("INSERT INTO logs(message, debug, dateNow) VALUES('$message', '".($debug ? 1 : 0)."', '".date('Y-m-d H:i:s')."')");
 		}	catch (Exception $ex) {
 		} catch (Error $er) {}
 	} // StorageMySQL::insertLog
@@ -667,8 +743,6 @@ abstract class Message {
 			"&access_token=".$bot->getGroupToken();
 		$request = file_get_contents($messURL); // still without post-обработки ))
 
-		echo "ok";
-
 		// success answer:
 		// {"response":34}
 		// error answer:
@@ -698,6 +772,14 @@ abstract class Message {
 
 	public function getContent() {
 		return $this->content;
+	} // Message::getContent
+	//------------------------------------------------------
+
+	public function getContentStr() {
+		$result = '';
+		foreach ($this->content as $key => $content)
+			$result .= "'message': '".$content['message']."' - 'type': '".$content['type']."'";
+		return $result;
 	} // Message::getContent
 	//------------------------------------------------------
 
@@ -736,6 +818,8 @@ class OutMessage extends Message {
 		// start waiting
 		$bot->startWaiting();
 
+		echo "ok";
+
 	} // OutMessage::send
 	//------------------------------------------------------
 
@@ -744,7 +828,48 @@ class OutMessage extends Message {
 
 abstract class Commands {
 
-	static $handlers = array('command_entries', 'command_user', 'command_balance');
+	static $handlers = array('command_entries', 'command_user', 'command_balance', 'command_show');
+	//------------------------------------------------------
+
+	static function command_show($sender, $in, &$out) {
+
+		$bot = Bot::getInstance();
+		if (is_null($bot))
+			throw BotException('can\'t take the Bot', 9);
+		$isThisCase = false;
+		$parts = explode(' ', $in);
+
+		// check for this case
+		$operationDate = NULL;
+		if ($parts[0] == 'показать') {
+			if (count($parts) == 1)
+				$subCommand = 0;
+			if (count($parts) > 1)
+				// operation date
+				$operationDate = Commands::getOperationDate($parts, 1);
+			$isThisCase = true;
+		}
+
+		if (!$isThisCase)
+			return false;
+
+		// implement this case
+		$date = is_null($operationDate) ? date('Y-m-d') : $operationDate;
+		$dt = explode(' ', $date);
+		$date = $dt[0];
+		$operations = $bot->getOperations($date, $sender->getPurseID());
+		if (count($operations) == 0)
+			$out[] = array('message' => "на дату $date нет операций", 'type' => 'message');
+		else {
+			$operationList = '';
+			foreach ($operations as $index => $operation)
+				$operationList .= ($index+1).') '.$operation['account'].' '.$operation['amount'].' руб. ('.$operation['comment'].")\n";
+			$out[] = array('message' => $operationList, 'type' => 'message');
+		}
+
+		return true;
+
+	} // Commands::command_show
 	//------------------------------------------------------
 
 	static function command_entries($sender, $in, &$out) {
@@ -892,6 +1017,13 @@ abstract class Commands {
 	} // Commands::command_entries
 	//------------------------------------------------------
 
+	/* command_user
+	Типы сообщений:
+	1. Пользователь - список всех подключённых пользователей к кошельку (права админа)
+	2. Пользователь [дата] активные - список активных пользователей на [дату]
+	3. Пользователь [дата] 'часть имени пользователя' +/- - активация/деактивация пользователя [датой]
+	4. Пользователь [дата] 'часть имени пользователя' депозит 'сумма пополнения'
+	*/
 	static function command_user($sender, $in, &$out) {
 
 		$bot = Bot::getInstance();
@@ -903,34 +1035,45 @@ abstract class Commands {
 		$parts = explode(' ', $in);
 
 		// check for this case
+		$subCommand = NULL;
 		if ($parts[0] == 'пользователь') {
 
+			if (count($parts) == 1)
+				$subCommand = 5;
+
+			$userIndex = 1;
+			$start = strlen($parts[0]) + 1;
 			$user = NULL;
+
 			if (count($parts) > 1) {
-				$start = strlen($parts[0]) + 1;
 
 				// operation date
 				$operationDate = Commands::getOperationDate($parts, 1);
 
-				// user
-				$userIndex = 1;
 				if (!is_null($operationDate)) {
 					$userIndex = 3;
 					$start += strlen($parts[1]) + strlen($parts[2]) + 2;
 				}
+
+				// active only
+				if ((count($parts) > $userIndex) && ($parts[$userIndex] == 'активные')) {
+					$bot->insertLog('active only', DEBUG);
+					$subCommand = 0;
+					$start += strlen($parts[$userIndex]) + 1;
+				}
+
+				// user
 				if (count($parts) > $userIndex) {
 					$error = '';
 					$user = $bot->findUserByName($parts[$userIndex], $error);
-					if ((is_null($user)) || ($error != '') || (!$user instanceof Member)) {
-						$out[] = array('message' => 'Не могу распознать пользователя: '.$error, 'type' => 'message');
-						return true;
+					if (!is_null($user) && ($user instanceof Member)) {
+						$subCommand = 4;
+						$start += strlen($parts[$userIndex]) + 1;
 					}
-					$start += strlen($parts[$userIndex]) + 1;
 				}
 			}
 
 			// active
-			$subCommand = NULL;
 			if (count($parts) > ($userIndex + 1)) {
 				switch($parts[$userIndex+1]) {
 					case '+':
@@ -963,18 +1106,26 @@ abstract class Commands {
 			$comment = substr(implode(" ", $parts), $start);
 			$comment = strlen($comment) <= 300 ? $comment : substr($comment, 300);
 
-			if (!is_null($user))
+			if (!is_null($subCommand))
 				$isThisCase = true;
 		}
 
+		$bot->insertLog('1-'.$subCommand.' - '.$isThisCase, DEBUG);
 		if (!$isThisCase)
 			return false;
 
 		// implement this case
 		$date = is_null($operationDate) ? date('Y-m-d H:i:s') : $operationDate;
 		switch ($subCommand) {
-			case NULL:
-				$out[] = array('message' => 'Здесь будет информация по пользователю '.$user->getName(), 'type' => 'message');
+			case 0: // active users only
+				$bot->insertLog('active only', DEBUG);
+				$users = $bot->getActiveUsers($date);
+				$usersList = '';
+				foreach ($users as $index => $user) {
+					$dt = explode(' ', $user['activateDate']);
+					$usersList .= ($index+1).') '.$dt[0].' - '.$user['name'].' ('.$user['userID'].")\n";
+				}
+				$out[] = array('message' => $usersList, 'type' => 'message');
 				break;
 			case 1: // set activity of user
 			case 2: // set deactivity of user
@@ -992,7 +1143,7 @@ abstract class Commands {
 				else
 					$out[] = array('message' => 'Указанная дата не входит в период существования кошелька', 'type' => 'message');
 				break;
-			case 3:
+			case 3: // change deposit
 				$error = '';
 				$conf = $bot->getConf();
 				if (!array_key_exists('defaultIncomeAccount', $conf)) {
@@ -1006,13 +1157,25 @@ abstract class Commands {
 					$out[] = array('message' => 'Не могу определить статью по-умолчанию, обратитесь к администратору этой группы', 'type' => 'message');
 					break;
 				}
+				if ($comment == '')
+					$comment = $user->getName();
 				if ($bot->changeDeposit($user, $subCommandParam, $account, $comment, $date, $error))
 					$out[] = array('message' => 'Депозит пользователя '.$user->getName().' успешно изменён на сумму '.$subCommandParam.' руб. датой '.$date, 'type' => 'message');
 				else
 					$out[] = array('message' => 'Произошла ошибка при изменении депозита пользователя '.$user->getName().': '.$error, 'type' => 'message');
 				break;
+			case 4: // user info
+				$out[] = array('message' => 'Здесь будет информация по пользователю '.$user->getName(), 'type' => 'message');
+				break;
+			case 5: // users list
+				$users = $bot->getAllUsers($date);
+				$usersList = '';
+				foreach ($users as $index => $user)
+					$usersList .= ($index+1).') '.$user['name'].' ('.$user['userID'].")\n";
+				$out[] = array('message' => $usersList, 'type' => 'message');
+				break;
 			default:
-				$out[] = array('message' => 'Не указана команда для действий с пользователем '.$user->getName(), 'type' => 'message');
+				$out[] = array('message' => 'Неизвестная команда', 'type' => 'message');
 		}
 
 		return true;
@@ -1036,31 +1199,32 @@ abstract class Commands {
 				$day_preg = '/2[0-9]{3}-[0-1][0-9]-[0-3][0-9]/u';
 				$month_preg = '/2[0-9]{3}-[0-1][0-9]/u';
 				$year_preg = '/2[0-9]{3}/u';
-				if (preg_match_all($day_preg, $commandParam, $period)) {
-					if (count($period) == 1) {
-						$period[] = $period[0].' 23:59:59';
-						$period[0] .= ' 00:00:00';
-					} elseif (count($period) == 2) {
-						$period[0] .= ' 00:00:00';
-						$period[1] .= ' 23:59:59';
+				$periods = array();
+				if (preg_match_all($day_preg, $commandParam, $periods)) {
+					if (count($periods[0]) == 1) {
+						$period[] = $periods[0][0].' 00:00:00';
+						$period[] = $periods[0][0].' 23:59:59';
+					} elseif (count($periods[0]) == 2) {
+						$period[] = $periods[0][0].' 00:00:00';
+						$period[] = $periods[0][1].' 23:59:59';
 					}
 				}
-				elseif(preg_match_all($day_month, $commandParam, $period)) {
-					if (count($period) == 1) {
-						$period[] = $period[0].'-'.date('d H:i:s', mktime(23, 59, 59, date('m'), date('t'), date('Y')));
-						$period[0] .= '-01 00:00:00';
-					} elseif (count($period) == 2) {
-						$period[0] .= '-01 00:00:00';
-						$period[1] .= '-'.date('d H:i:s', mktime(23, 59, 59, date('m'), date('t'), date('Y')));
+				elseif(preg_match_all($month_preg, $commandParam, $periods)) {
+					if (count($periods[0]) == 1) {
+						$period[] = $periods[0][0].'-01 00:00:00';
+						$period[] = $periods[0][0].'-'.date('d H:i:s', mktime(23, 59, 59, date('m'), date('t'), date('Y')));
+					} elseif (count($periods[0]) == 2) {
+						$period[] = $periods[0][0].'-01 00:00:00';
+						$period[] = $periods[0][1].'-'.date('d H:i:s', mktime(23, 59, 59, date('m'), date('t'), date('Y')));
 					}
 				}
-				elseif(preg_match_all($day_year, $commandParam, $period)) {
-					if (count($period) == 1) {
-						$period[] = $period[0].'-12-31 23:59:59';
-						$period[0] .= '-01-01 00:00:00';
-					} elseif (count($period) == 2) {
-						$period[0] .= '-01-01 00:00:00';
-						$period[1] .= '-12-31 23:59:59';
+				elseif(preg_match_all($year_preg, $commandParam, $periods)) {
+					if (count($periods[0]) == 1) {
+						$period[] = $periods[0][0].'-01-01 00:00:00';
+						$period[] = $periods[0][0].'-12-31 23:59:59';
+					} elseif (count($periods[0]) == 2) {
+						$period[0] .= $periods[0][0].'-01-01 00:00:00';
+						$period[1] .= $periods[0][0].'-12-31 23:59:59';
 					}
 				}
 
@@ -1099,7 +1263,7 @@ abstract class Commands {
 			$dateTimePreg = '/2[0-9]{3}-[0-1][0-9]-[0-3][0-9]_[0-2][0-9]:[0-5][0-9]:[0-5][0-9]/u';
 			$datePreg = '/2[0-9]{3}-[0-1][0-9]-[0-3][0-9]/u';
 			if (preg_match($datePreg, $parts[$index+1], $operDate))
-				return $operDate[0].' 00:00:00';
+				return $operDate[0].date(' H:i:s');
 			if (preg_match($dateTimePreg, $parts[$index+1], $operDate))
 				return $operDate[0];
 		}
@@ -1200,7 +1364,8 @@ abstract class Member {
 
 	function __construct($id) {
 		$this->id = $id;
-		$this->name = $this->getNameFromAPI();
+		//$this->name = $this->getNameFromAPI();
+		$this->name = Member::getNameFromDB($this->id);
 	} // Member:__construct
 	//------------------------------------------------------
 
@@ -1223,6 +1388,18 @@ abstract class Member {
 		// check member for exists in data base
 		throw new BotException('no body of isOur');
 	} // Member::isOur
+	//------------------------------------------------------
+
+	static function getNameFromDB($userID) {
+		$bot = Bot::getInstance();
+		if (is_null($bot))
+			throw new BotException('can\'t take the Bot', 1);
+		$queryStr = "SELECT name FROM users WHERE userID=$userID";
+		$res = $bot->query($queryStr, BotMngr::QUERY_RESULT_UNLOAD);
+		if (count($res) == 1)
+			return $res[0]['name'];
+		return '';
+	} // Member::getNameFromDB
 	//------------------------------------------------------
 
 	abstract protected function getNameFromAPI();
