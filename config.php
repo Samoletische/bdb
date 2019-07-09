@@ -252,7 +252,7 @@ class Bot {
 	//------------------------------------------------------
 
 	public function setUserActivity($user, $active, $date=NULL, &$error='') {
-		$date = is_null($date) ? date('Y-m-d H:i:s') : $date;
+		$date = is_null($date) ? date('Y-m-d') : $date;
 		$userID = $user->getID();
 		$activated = $this->isUserActive($userID, $date) ? 1 : 0;
 		if ($activated != $active) {
@@ -303,8 +303,7 @@ class Bot {
 	} // Bot::getActiveUsers
 	//------------------------------------------------------
 
-	public function getAllUsers($date=NULL) {
-		$date = is_null($date) ? date('Y-m-d H:i:s') : $date;
+	public function getAllUsers() {
 		$queryStr = "SELECT userID, name FROM users";
 		$res = $this->query($queryStr, BotMngr::QUERY_RESULT_UNLOAD);
 		return $res;
@@ -331,26 +330,26 @@ class Bot {
 	} // Bot::getActiveUsers
 	//------------------------------------------------------
 
-	public function getOperations($date=NULL, $purseID) {
+	public function getOperations($date=NULL, $purseID, $details=false) {
 		$date = is_null($date) ? date('Y-m-d') : $date;
 		$dt = explode(' ', $date);
 		$dateS = $dt[0].' 00:00:00';
 		$dateE = $dt[0].' 23:59:59';
-		$queryStr = "SELECT
-				accounts.title AS account,
-				SUM(purse.amount) AS amount,
-				purse.comment AS comment
+		$queryStr = 'SELECT
+				accounts.title AS account,';
+		$queryStr .= $details ? 'purse.amount AS amount,' : 'SUM(purse.amount) AS amount,';
+		$queryStr .= 'purse.comment AS comment';
+		$this->insertLog("details=$details", DEBUG);
+		$queryStr .= $details ? ',users.name AS name' : '';
+		$queryStr .= "
 			FROM
 				purse
 				LEFT JOIN accounts ON accounts.id=purse.account
 				LEFT JOIN users ON users.userID=purse.userID
 			WHERE
 				purse.period >= '$dateS' AND purse.period <= '$dateE'
-				AND purse.purseID
-			GROUP BY
-				purse.period,
-				purse.account,
-				purse.comment";
+				AND purse.purseID=$purseID";
+		$queryStr .= $details ? '' : ' GROUP BY purse.period, purse.account, purse.comment';
 		$this->insertLog($queryStr, DEBUG);
 		$res = $this->query($queryStr, BotMngr::QUERY_RESULT_UNLOAD);
 		return $res;
@@ -358,9 +357,10 @@ class Bot {
 	// Bot::getOperations
  //------------------------------------------------------
 
-	public function getBalance($date=NULL, $purseID) {
+	public function getBalance($date=NULL, $purseID, $userID=NULL) {
 		$date = is_null($date) ? date('Y-m-d H:i:s') : $date;
 		$queryStr = "SELECT SUM(amount) AS balance FROM purse WHERE purseID=$purseID AND period<='$date'";
+		$queryStr .= is_null($userID) ? '' : " AND userID=$userID";
 		$res = $this->query($queryStr, BotMngr::QUERY_RESULT_UNLOAD);
 		if (count($res) == 0)
 			return 0;
@@ -384,6 +384,17 @@ class Bot {
 			return 0;
 		return round(-$res[0]['expense'], 2);
 	} // Bot::getExpense
+	//------------------------------------------------------
+
+	public function getDeposits($date, $purseID) {
+		$result = array();
+		if (($this->conf['purseCommon']) || ($this->conf['purseProtect']))
+			return $result;
+		$users = $this->getActiveUsers($date);
+		foreach($users as $user)
+			$result[] = array('name' => $user['name'], 'deposit' => $this->getBalance($date, $purseID, $user['userID']));
+		return $result;
+	} // Bot::getDeposits
 	//------------------------------------------------------
 
 } // Bot
@@ -844,9 +855,17 @@ abstract class Commands {
 		if ($parts[0] == 'показать') {
 			if (count($parts) == 1)
 				$subCommand = 0;
-			if (count($parts) > 1)
+
+			if (count($parts) > 1) {
 				// operation date
 				$operationDate = Commands::getOperationDate($parts, 1);
+
+				$nextIndex = is_null($operationDate) ? 1 : 3;
+				// details
+				$details = ((count($parts) > $nextIndex) && ($parts[$nextIndex] == 'детали'));
+				$bot->insertLog($parts[$nextIndex-1], DEBUG);
+				$bot->insertLog("1. details=$details", DEBUG);
+			}
 			$isThisCase = true;
 		}
 
@@ -857,13 +876,19 @@ abstract class Commands {
 		$date = is_null($operationDate) ? date('Y-m-d') : $operationDate;
 		$dt = explode(' ', $date);
 		$date = $dt[0];
-		$operations = $bot->getOperations($date, $sender->getPurseID());
+		$operations = $bot->getOperations($date, $sender->getPurseID(), $details);
 		if (count($operations) == 0)
 			$out[] = array('message' => "на дату $date нет операций", 'type' => 'message');
 		else {
-			$operationList = '';
-			foreach ($operations as $index => $operation)
-				$operationList .= ($index+1).') '.$operation['account'].' '.$operation['amount'].' руб. ('.$operation['comment'].")\n";
+			$operationList = "Все операции за {$dt[0]}:\n";
+			$sum = 0;
+			foreach ($operations as $index => $operation) {
+				$amount = round($operation['amount'], 2);
+				$sum += $amount;
+				$userName = $details ? ' - '.$operation['name'] : '';
+				$operationList .= ($index+1).') '.$operation['account'].' '.$amount.' руб. ('.$operation['comment'].')'.$userName."\n";
+			}
+			$operationList .= "Итого: $sum руб.\n";
 			$out[] = array('message' => $operationList, 'type' => 'message');
 		}
 
@@ -1120,22 +1145,28 @@ abstract class Commands {
 			case 0: // active users only
 				$bot->insertLog('active only', DEBUG);
 				$users = $bot->getActiveUsers($date);
-				$usersList = '';
-				foreach ($users as $index => $user) {
-					$dt = explode(' ', $user['activateDate']);
-					$usersList .= ($index+1).') '.$dt[0].' - '.$user['name'].' ('.$user['userID'].")\n";
+				$dt = explode(' ', $date);
+				if (count($users) == 0)
+					$out[] = array('message' => "На {$dt[0]} отсутствуют активные пользователи", 'type' => 'message');
+				else {
+					$usersList = "Активные пользователи на {$dt[0]}:\n";
+					foreach ($users as $index => $user) {
+						$dt = explode(' ', $user['activateDate']);
+						$usersList .= ($index+1).') '.$dt[0].' - '.$user['name'].' ('.$user['userID'].")\n";
+					}
+					$out[] = array('message' => $usersList, 'type' => 'message');
 				}
-				$out[] = array('message' => $usersList, 'type' => 'message');
 				break;
 			case 1: // set activity of user
 			case 2: // set deactivity of user
 				$startTime = $bot->getPurseStartTime();
 				$lastTime = date('Y-m-d 23:59:59');
 				$error = '';
+				$dt = explode(' ', $date);
 				if (($startTime <= $date) && ($date <= $lastTime)) {
-					if ($bot->setUserActivity($user, ($subCommand == 1) ? 1 : 0, $date, $error)) {
+					if ($bot->setUserActivity($user, ($subCommand == 1) ? 1 : 0, $dt[0], $error)) {
 						$res = ($subCommand == 1) ? 'подключен' : 'отключен';
-						$out[] = array('message' => 'Пользователь '.$user->getName().' успешно '.$res.' датой '.$date, 'type' => 'message');
+						$out[] = array('message' => 'Пользователь '.$user->getName().' успешно '.$res.' датой '.$dt[0], 'type' => 'message');
 					}
 					else
 						$out[] = array('message' => 'Произошла ошибка при подключении/отключении пользователя к/от кошельку(а): '.$error, 'type' => 'message');
@@ -1168,7 +1199,8 @@ abstract class Commands {
 				$out[] = array('message' => 'Здесь будет информация по пользователю '.$user->getName(), 'type' => 'message');
 				break;
 			case 5: // users list
-				$users = $bot->getAllUsers($date);
+				$users = $bot->getAllUsers();
+				$usersList = "Все пользователи:\n";
 				$usersList = '';
 				foreach ($users as $index => $user)
 					$usersList .= ($index+1).') '.$user['name'].' ('.$user['userID'].")\n";
@@ -1246,11 +1278,23 @@ abstract class Commands {
 			return false;
 
 		// implement this case
-		$res = Commands::getBalance($period[0], $period[1], $sender->getPurseID());
-		if ($res['result'] == 'ok')
-			$out[] = array('message' => $res['message'], 'type' => 'message');
-		else
-			$out[] = array('message' => 'Сбой при обработке команды: '.$res['message'], 'type' => 'message');
+		$periodS = explode(' ', $period[0]);
+		$periodE = explode(' ', $period[1]);
+		$purseID = $sender->getPurseID();
+		$message = 'Баланс за период с '.$periodS[0].' по '.$periodE[0].":\n";
+		$message .= 'на начало периода: '.$bot->getBalance($period[0], $purseID)."\n";
+		$message .= 'доход за период: '.$bot->getIncome($period[0], $period[1], $purseID)."\n";
+		$message .= 'расход за период: '.$bot->getExpense($period[0], $period[1], $purseID)."\n";
+		$message .= 'на конец периода: '.$bot->getBalance($period[1], $purseID)."\n";
+
+		$deposits = $bot->getDeposits($period[1], $purseID);
+		if (count($deposits) > 0) {
+			$message .= "Депозиты активных на конец периода:\n";
+			foreach ($deposits as $index => $deposit)
+				$message .= ($index+1).') '.$deposit['name'].': '.$deposit['deposit']."\n";
+		}
+
+		$out[] = array('message' => $message, 'type' => 'message');
 
 		return true;
 
@@ -1269,43 +1313,6 @@ abstract class Commands {
 		}
 		return NULL;
 	} // getOperationDate
-	//------------------------------------------------------
-
-	static function getBalance($periodStart, $periodEnd, $purseID) {
-
-		$bot = Bot::getInstance();
-		if (is_null($bot))
-			throw BotException('can\'t take the Bot', 8);
-
-		$result = array( 'result' => 'ok', 'message' => '');
-
-		try {
-			$periodS = explode(' ', $periodStart);
-			$periodE = explode(' ', $periodEnd);
-			$result['message'] = 'Баланс за период с '.$periodS[0].' по '.$periodE[0].":\n";
-			$result['message'] .= 'на начало периода: '.$bot->getBalance($periodStart, $purseID)."\n";
-			$result['message'] .= 'доход за период: '.$bot->getIncome($periodStart, $periodEnd, $purseID)."\n";
-			$result['message'] .= 'расход за период: '.$bot->getExpense($periodStart, $periodEnd, $purseID)."\n";
-			$result['message'] .= 'на конец периода: '.$bot->getBalance($periodEnd, $purseID)."\n";
-
-			// $conf = $bot->getConf();
-			// if ((!$conf['purseCommon']) && (!$conf['purseProtect'])) {
-			// 	$result['message'] .= "Депозит каждого участника:\n";
-			// 	$deposits = $bot->getDeposits($periodEnd, $purseID);
-			// 	foreach ($deposits as $deposit)
-			// 		$result['message'] .= $deposit['name'].': '.$deposit['deposit']."\n";
-			// }
-		} catch (StorageException $e) {
-			$result['result'] = "error";
-	   	$result['message'] = $e->getMessage();
-		} catch (Exception $ex) {
-			$result['result'] = "error";
-	   	$result['message'] = $ex->getMessage();
-		}
-
-		return $result;
-
-	} // Commands::getBalance
 	//------------------------------------------------------
 
 	static function getAccount($acc, $mayGetAll=false) {
