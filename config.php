@@ -386,15 +386,33 @@ class Bot {
 	} // Bot::getExpense
 	//------------------------------------------------------
 
-	public function getDeposits($date, $purseID) {
+	public function getDeposits($date, $purseID, $activeOnly=false) {
 		$result = array();
 		if (($this->conf['purseCommon']) || ($this->conf['purseProtect']))
 			return $result;
-		$users = $this->getActiveUsers($date);
-		foreach($users as $user)
-			$result[] = array('name' => $user['name'], 'deposit' => $this->getBalance($date, $purseID, $user['userID']));
+		if ($activeOnly) {
+			$users = $this->getActiveUsers($date);
+			foreach($users as $user)
+				$result[] = array('name' => $user['name'], 'deposit' => $this->getBalance($date, $purseID, $user['userID']));
+		}
+		else {
+			$queryStr = 'SELECT users.name AS name, SUM(purse.amount) AS deposit FROM users INNER JOIN purse ON users.userID=purse.userID GROUP BY users.name';
+			$users = $this->query($queryStr, BotMngr::QUERY_RESULT_UNLOAD);
+			foreach($users as $user)
+				$result[] = array('name' => $user['name'], 'deposit' => round((float)$user['deposit'], 2));
+		}
 		return $result;
 	} // Bot::getDeposits
+	//------------------------------------------------------
+
+	public function getAccount($acc, $mayGetAll=false) {
+		$result = array();
+		if (($acc == '') && !$mayGetAll)
+			return $result;
+		$queryStr = "SELECT id, title FROM accounts WHERE title LIKE '%$acc%' ORDER BY title";
+		$result = $this->query($queryStr, BotMngr::QUERY_RESULT_UNLOAD);
+		return $result;
+	} // Bot::getAccount
 	//------------------------------------------------------
 
 } // Bot
@@ -809,9 +827,11 @@ class OutMessage extends Message {
 	public function send() {
 
 		// sending
+		$sendOK = true;
 		foreach ($this->content as $content) {
 			switch ($content['type']) {
 				case "confirmation":
+					$sendOK = false;
 					echo $content['message'];
 					break;
 				case "message":
@@ -829,7 +849,8 @@ class OutMessage extends Message {
 		// start waiting
 		$bot->startWaiting();
 
-		echo "ok";
+		if ($sendOK)
+			echo "ok";
 
 	} // OutMessage::send
 	//------------------------------------------------------
@@ -839,7 +860,42 @@ class OutMessage extends Message {
 
 abstract class Commands {
 
-	static $handlers = array('command_entries', 'command_user', 'command_balance', 'command_show');
+	static $handlers = array('command_entries', 'command_user', 'command_balance', 'command_show', 'command_accounts');
+	//------------------------------------------------------
+
+	static function command_accounts($sender, $in, &$out) {
+
+		$bot = Bot::getInstance();
+		if (is_null($bot))
+			throw BotException('can\'t take the Bot', 9);
+		$isThisCase = false;
+		$parts = explode(' ', $in);
+
+		// check for this case
+		if ($parts[0] == 'статьи') {
+
+			$account = (count($parts) > 1) ? $parts[1] : '';
+
+			$isThisCase = true;
+		}
+
+		if (!$isThisCase)
+			return false;
+
+		// implement this case
+		$accounts = $bot->getAccount($account, true);
+		if (count($accounts) == 0)
+			$out[] = array('message' => "по запросу '$account' не найдено никаких статей", 'type' => 'message');
+		else {
+			$accountList = (count($accounts) == 1) ? "найдена статья: " : "найдены статьи: ";
+			foreach ($accounts as $account)
+				$accountList .= "'".$account['title']."(".$account['id'].")' ";
+			$out[] = array('message' => $accountList, 'type' => 'message');
+		}
+
+		return true;
+
+	} // Commands::command_accounts
 	//------------------------------------------------------
 
 	static function command_show($sender, $in, &$out) {
@@ -852,7 +908,7 @@ abstract class Commands {
 
 		// check for this case
 		$operationDate = NULL;
-		if ($parts[0] == 'показать') {
+		if (($parts[0] == 'показать') || ($parts[0] == 'показ')) {
 			if (count($parts) == 1)
 				$subCommand = 0;
 
@@ -932,8 +988,8 @@ abstract class Commands {
 					$start += strlen($parts[1]) + strlen($parts[2]) + 2;
 				}
 				if (count($parts) > $accountIndex) {
-					$account = Commands::getAccount($parts[$accountIndex]);
-					$start += ($account['result'] == 'ok' ? strlen($parts[$accountIndex]) + 1 : 0);
+					$accounts = $bot->getAccount($parts[$accountIndex]);
+					$start += (count($accounts) == 1 ? strlen($parts[$accountIndex]) + 1 : 0);
 				}
 
 				// comment
@@ -952,6 +1008,9 @@ abstract class Commands {
 		try {
 			$date = is_null($operationDate) ? date('Y-m-d H:i:s') : $operationDate;
 			$conf = $bot->getConf();
+
+			$account = (count($accounts) == 1) ? $accounts[0] : '';
+
 			if ($conf['devideForAll']) { // devide for all active users
 				$users = $bot->getActiveUsers($date);
 				if (is_null($users))
@@ -1003,7 +1062,8 @@ abstract class Commands {
 						,".$sender->getID()."
 						,".$sender->getPurseID().")";
 			}
-			$bot->query($queryStr);
+			if (is_null($bot->query($queryStr)))
+				throw new StorageException('ошибка обработки команды');
 
 			$message = '';
 			if ($motion == 0) {
@@ -1015,8 +1075,8 @@ abstract class Commands {
 
 			$message .= " на сумму $amount руб. принят ";
 
-			if ($account['result'] == 'ok')
-				$message .= "по статье '".$account['message']."' ";
+			if (count($accounts) == 1)
+				$message .= "по статье '".$account['title']."' ";
 			else
 				$message .= "без статьи ";
 
@@ -1025,8 +1085,8 @@ abstract class Commands {
 			else
 				$message .= "с комментарием \"$comment\"";
 
-			if ($account['result'] == "many")
-				$message .= "\nБез статьи, т. к. нашлось несколько: ".$account['message'];
+			if (count($accounts) > 1)
+				$message .= "\nБез статьи, т. к. нашлось несколько...";
 
 			$out[] = array('message' => $message, 'type' => 'message');
 		} catch (StorageException $e) {
@@ -1061,7 +1121,7 @@ abstract class Commands {
 
 		// check for this case
 		$subCommand = NULL;
-		if ($parts[0] == 'пользователь') {
+		if (($parts[0] == 'пользователь') || ($parts[0] == 'польз')) {
 
 			if (count($parts) == 1)
 				$subCommand = 5;
@@ -1181,9 +1241,9 @@ abstract class Commands {
 					$out[] = array('message' => 'Не настроена статья по-умолчанию, обратитесь к администратору этой группы', 'type' => 'message');
 					break;
 				}
-				$result = Commands::getAccount($conf['defaultIncomeAccount']);
-				if ($result['result'] == 'ok')
-					$account = $result['id'];
+				$accounts = $bot->getAccount($conf['defaultIncomeAccount']);
+				if (count($accounts) == 1)
+					$account = $accounts[0]['id'];
 				else {
 					$out[] = array('message' => 'Не могу определить статью по-умолчанию, обратитесь к администратору этой группы', 'type' => 'message');
 					break;
@@ -1289,9 +1349,9 @@ abstract class Commands {
 
 		$deposits = $bot->getDeposits($period[1], $purseID);
 		if (count($deposits) > 0) {
-			$message .= "Депозиты активных на конец периода:\n";
+			$message .= "Депозиты:\n";
 			foreach ($deposits as $index => $deposit)
-				$message .= ($index+1).') '.$deposit['name'].': '.$deposit['deposit']."\n";
+				$message .= ($index+1).') '.$deposit['name'].': '.$deposit['deposit']." руб.\n";
 		}
 
 		$out[] = array('message' => $message, 'type' => 'message');
@@ -1313,51 +1373,6 @@ abstract class Commands {
 		}
 		return NULL;
 	} // getOperationDate
-	//------------------------------------------------------
-
-	static function getAccount($acc, $mayGetAll=false) {
-
-		$bot = Bot::getInstance();
-		if (is_null($bot))
-			throw BotException('can\'t take the Bot', 7);
-
-		$result = array( 'result' => 'error', 'message' => '', 'id' => '' );
-
-		try {
-			$bot->insertLog("acc=".$acc, true);
-			if (($acc == '') && !$mayGetAll)
-				return $result;
-
-			$queryStr = "SELECT id, title FROM accounts WHERE title LIKE '%$acc%' ORDER BY title";
-			$query = $bot->query($queryStr);
-			switch ($query->num_rows) {
-				case 0:
-				 	$result['result'] = 'no';
-					break;
-				case 1:
-					$result['result'] = 'ok';
-					break;
-				default:
-					$result['result'] = 'many';
-					break;
-			}
-
-			while ($row = $query->fetch_array()) {
-				$result['id'] = $query->num_rows == 1 ? $row['id'] : '';
-				$result['message'] .= ($result['message'] == '' ? '' : ', ').$row['title'];
-			}
-			$bot->insertLog("accMessage=".$result['message'], true);
-		} catch (StorageException $e) {
-			$result['result'] = "error";
-	   	$result['message'] = $e->getMessage();
-		} catch (Exception $ex) {
-			$result['result'] = "error";
-	   	$result['message'] = $ex->getMessage();
-		}
-
-		return $result;
-
-	} // Commands::getAccount
 	//------------------------------------------------------
 
 } // Commands
