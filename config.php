@@ -10,6 +10,7 @@ abstract class BotMngr {
 
 	const QUERY_RESULT_UNLOAD = true;
 	const QUERY_RESULT_CHOOSE = false;
+	const DEBTORS_AMOUNT			= 10;
 	//------------------------------------------------------
 
 	static private $requiredFields = array(
@@ -410,6 +411,28 @@ class Bot {
 		if (($acc == '') && !$mayGetAll)
 			return $result;
 		$queryStr = "SELECT id, title FROM accounts WHERE title LIKE '%$acc%' ORDER BY title";
+		$result = $this->query($queryStr, BotMngr::QUERY_RESULT_UNLOAD);
+		return $result;
+	} // Bot::getAccount
+	//------------------------------------------------------
+
+	public function getDebtors() {
+		$result = array();
+		$queryStr = 'SELECT
+				debtors.userID,
+				debtors.amount
+			FROM
+				(
+					SELECT
+						userID AS userID,
+						sum(amount) AS amount
+					FROM
+						purse
+					GROUP BY
+						userID
+				) AS debtors
+			WHERE
+				amount<'.BotMngr::DEBTORS_AMOUNT;
 		$result = $this->query($queryStr, BotMngr::QUERY_RESULT_UNLOAD);
 		return $result;
 	} // Bot::getAccount
@@ -824,10 +847,10 @@ class InMessage extends Message {
 
 class OutMessage extends Message {
 
-	public function send() {
+	public function send($sendOK=true) {
 
 		// sending
-		$sendOK = true;
+		//$sendOK = true;
 		foreach ($this->content as $content) {
 			switch ($content['type']) {
 				case "confirmation":
@@ -1250,8 +1273,15 @@ abstract class Commands {
 				}
 				if ($comment == '')
 					$comment = $user->getName();
-				if ($bot->changeDeposit($user, $subCommandParam, $account, $comment, $date, $error))
+				if ($bot->changeDeposit($user, $subCommandParam, $account, $comment, $date, $error)) {
 					$out[] = array('message' => 'Депозит пользователя '.$user->getName().' успешно изменён на сумму '.$subCommandParam.' руб. датой '.$date, 'type' => 'message');
+					$changeType = $subCommandParam > 0 ? 'пополнен' : ($subCommandParam < 0 ? 'уменьшен' : '');
+					if ($changeType != '') {
+						$messageContent = array(array('message' => $date.' - Ваш депозит '.$changeType.' на сумму '.abs($subCommandParam).' руб.', 'type' => 'message'));
+						$message = new OutMessage($messageContent, $sender, $user);
+						$message->send(false);
+					}
+				}
 				else
 					$out[] = array('message' => 'Произошла ошибка при изменении депозита пользователя '.$user->getName().': '.$error, 'type' => 'message');
 				break;
