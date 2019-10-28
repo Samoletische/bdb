@@ -926,6 +926,7 @@ abstract class Commands {
 		$bot = Bot::getInstance();
 		if (is_null($bot))
 			throw BotException('can\'t take the Bot', 9);
+		$conf = $bot->getConf();
 		$isThisCase = false;
 		$parts = explode(' ', $in);
 
@@ -935,6 +936,7 @@ abstract class Commands {
 			if (count($parts) == 1)
 				$subCommand = 0;
 
+			$details = false;
 			if (count($parts) > 1) {
 				// operation date
 				$operationDate = Commands::getOperationDate($parts, 1);
@@ -945,6 +947,7 @@ abstract class Commands {
 				$bot->insertLog($parts[$nextIndex-1], DEBUG);
 				$bot->insertLog("1. details=$details", DEBUG);
 			}
+			$details |= !$conf['devideForAll'];
 			$isThisCase = true;
 		}
 
@@ -1192,7 +1195,7 @@ abstract class Commands {
 						$subCommand = 2;
 						$start += strlen($parts[$userIndex+1]) + 1;
 						break;
-					case 'депозит':
+					case 'депозит': case 'вклад':
 						$subCommand = 3;
 						$start += strlen($parts[$userIndex+1]) + 1;
 						break;
@@ -1274,10 +1277,19 @@ abstract class Commands {
 				if ($comment == '')
 					$comment = $user->getName();
 				if ($bot->changeDeposit($user, $subCommandParam, $account, $comment, $date, $error)) {
-					$out[] = array('message' => 'Депозит пользователя '.$user->getName().' успешно изменён на сумму '.$subCommandParam.' руб. датой '.$date, 'type' => 'message');
-					$changeType = $subCommandParam > 0 ? 'пополнен' : ($subCommandParam < 0 ? 'уменьшен' : '');
+					if ($conf['purseCommon']) {
+						$out[] = array('message' => 'От пользователя '.$user->getName().' поступила сумма '.$subCommandParam.' руб. датой '.$date, 'type' => 'message');
+						$changeType = $subCommandParam > 0 ? 'пополнили' : ($subCommandParam < 0 ? 'уменьшили' : '');
+					}
+					else {
+						$out[] = array('message' => 'Депозит пользователя '.$user->getName().' успешно изменён на сумму '.$subCommandParam.' руб. датой '.$date, 'type' => 'message');
+						$changeType = $subCommandParam > 0 ? 'пополнен' : ($subCommandParam < 0 ? 'уменьшен' : '');
+					}
 					if ($changeType != '') {
-						$messageContent = array(array('message' => $date.' - Ваш депозит '.$changeType.' на сумму '.abs($subCommandParam).' руб.', 'type' => 'message'));
+						if ($conf['purseCommon'])
+							$messageContent = array(array('message' => $date.' - Вы успешно '.$changeType.' общий баланс на сумму '.abs($subCommandParam).' руб.', 'type' => 'message'));
+						else
+							$messageContent = array(array('message' => $date.' - Ваш депозит '.$changeType.' на сумму '.abs($subCommandParam).' руб.', 'type' => 'message'));
 						$message = new OutMessage($messageContent, $sender, $user);
 						$message->send(false);
 					}
