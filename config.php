@@ -939,9 +939,12 @@ abstract class Commands {
 			$details = false;
 			if (count($parts) > 1) {
 				// operation date
-				$operationDate = Commands::getOperationDate($parts, 1);
-
-				$nextIndex = is_null($operationDate) ? 1 : 3;
+				$operationDate = Commands::getOperationDateByDay($parts, 1);
+				if (is_null($operationDate)) {
+					$operationDate = Commands::getOperationDate($parts, 1);
+					$nextIndex = is_null($operationDate) ? 1 : 3;
+				} else
+					$nextIndex = 2;
 				// details
 				$details = ((count($parts) > $nextIndex) && ($parts[$nextIndex] == 'детали'));
 				$bot->insertLog($parts[$nextIndex-1], DEBUG);
@@ -1401,6 +1404,13 @@ abstract class Commands {
 		return true;
 
 	} // Commands::command_balance
+	//------------------------------------------------------
+
+	static function getOperationDateByDay($parts, $index) {
+		if ($parts[$index] == ‘вчера’)
+			return date(‘Y-m-d H:i:s’, strtotime(‘-1 DAY’));
+		return NULL;
+	} // getOperationDateByDay
 	//------------------------------------------------------
 
 	static function getOperationDate($parts, $index) {
