@@ -1408,7 +1408,7 @@ abstract class Commands {
 
 	static function getOperationDateByDay($parts, $index) {
 		if ($parts[$index] == ‘вчера’)
-			return date(‘Y-m-d H:i:s’, strtotime(‘-1 DAY’));
+			return date('Y-m-d H:i:s', strtotime('-1 day'));
 		return NULL;
 	} // getOperationDateByDay
 	//------------------------------------------------------
