@@ -1407,14 +1407,14 @@ abstract class Commands {
 	//------------------------------------------------------
 
 	static function getOperationDateByDay($parts, $index) {
-		if ($parts[$index] == ‘вчера’)
+		if (mb_strtolower($parts[$index]) == 'вчера')
 			return date('Y-m-d H:i:s', strtotime('-1 day'));
 		return NULL;
 	} // getOperationDateByDay
 	//------------------------------------------------------
 
 	static function getOperationDate($parts, $index) {
-		if (($parts[$index] == 'дата') && (count($parts) > ($index + 1))) {
+		if ((mb_strtolower($parts[$index]) == 'дата') && (count($parts) > ($index + 1))) {
 			$operDate = array();
 			$dateTimePreg = '/2[0-9]{3}-[0-1][0-9]-[0-3][0-9]_[0-2][0-9]:[0-5][0-9]:[0-5][0-9]/u';
 			$datePreg = '/2[0-9]{3}-[0-1][0-9]-[0-3][0-9]/u';
