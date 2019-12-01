@@ -16,8 +16,8 @@
     "dbUser": "bdb",
     "dbPassword": "8d8"
   },
-  "defaultIncomeAccount": "депозит",
-  "devideForAll": true,
+  "defaultIncomeAccount": "Перевод",
+  "devideForAll": false,
   "purseCommon": false,
   "purseProtect": false,
   "standardCommands": [

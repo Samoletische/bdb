@@ -101,8 +101,9 @@ class Bot {
 	public function getMessage() {
 
 		// get data from input
-		$input = $this->conf['testMode'] ? $this->conf['testInput'] : $this->conf['mainInput'];
-		$data = json_decode(file_get_contents($input));
+		//$input = $this->conf['testMode'] ? $this->conf['testInput'] : $this->conf['mainInput'];
+		$input = $this->conf['mainInput'];
+		$data = json_decode(trim(preg_replace("/  +/", " ", file_get_contents($input))));
 		if (json_last_error() != JSON_ERROR_NONE)
 			throw new BotException('bad JSON in input');
 
@@ -340,7 +341,7 @@ class Bot {
 				accounts.title AS account,';
 		$queryStr .= $details ? 'purse.amount AS amount,' : 'SUM(purse.amount) AS amount,';
 		$queryStr .= 'purse.comment AS comment';
-		$this->insertLog("details=$details", DEBUG);
+		//$this->insertLog("details=$details", DEBUG);
 		$queryStr .= $details ? ',users.name AS name' : '';
 		$queryStr .= "
 			FROM
@@ -369,8 +370,20 @@ class Bot {
 	} // Bot::getBalance
 	//------------------------------------------------------
 
+	private function getDefaultIncomeAccount() {
+		$conf = $this->getConf();
+		$accounts = $this->getAccount($conf['defaultIncomeAccount']);
+		if (count($accounts) == 1)
+			return $accounts[0]['id'];
+		else
+			return NULL;
+	} // Bot::getDefaultIncomeAccount
+	//------------------------------------------------------
+
 	public function getIncome($periodStart, $periodEnd, $purseID) {
-		$queryStr = "SELECT SUM(amount) AS income FROM purse WHERE purseID=$purseID AND motion=1 AND period>='$periodStart' AND period<='$periodEnd'";
+		$defaultIncomeAccount = $this->getDefaultIncomeAccount();
+		$accountStr = is_null($defaultIncomeAccount) ? "" : " AND account<>$defaultIncomeAccount";
+		$queryStr = "SELECT SUM(amount) AS income FROM purse WHERE purseID=$purseID AND motion=1 AND period>='$periodStart' AND period<='$periodEnd'".$accountStr;
 		$res = $this->query($queryStr, BotMngr::QUERY_RESULT_UNLOAD);
 		if (count($res) == 0)
 			return 0;
@@ -379,7 +392,9 @@ class Bot {
 	//------------------------------------------------------
 
 	public function getExpense($periodStart, $periodEnd, $purseID) {
-		$queryStr = "SELECT SUM(amount) AS expense FROM purse WHERE purseID=$purseID AND motion=0 AND period>='$periodStart' AND period<='$periodEnd'";
+		$defaultIncomeAccount = $this->getDefaultIncomeAccount();
+		$accountStr = is_null($defaultIncomeAccount) ? "" : " AND account<>$defaultIncomeAccount";
+		$queryStr = "SELECT SUM(amount) AS expense FROM purse WHERE purseID=$purseID AND motion=0 AND period>='$periodStart' AND period<='$periodEnd'".$accountStr;
 		$res = $this->query($queryStr, BotMngr::QUERY_RESULT_UNLOAD);
 		if (count($res) == 0)
 			return 0;
@@ -578,7 +593,7 @@ abstract class Message {
 					// check other commands
 					foreach(Commands::$handlers as $handler) {
 						// вставить проверку существования метода и можно ли его запускать
-						if (Commands::$handler($this->sender, $mess, $answerContent)) {
+						if (Commands::$handler($this->sender, $mess, $answerContent, $content['message'])) {
 							$commandFound = true;
 							break;
 						}
@@ -849,6 +864,11 @@ class OutMessage extends Message {
 
 	public function send($sendOK=true) {
 
+		$bot = Bot::getInstance();
+		if (is_null($bot))
+			throw BotException('can\'t take the Bot', 6);
+		$conf = $bot->getConf();
+
 		// sending
 		//$sendOK = true;
 		foreach ($this->content as $content) {
@@ -858,16 +878,15 @@ class OutMessage extends Message {
 					echo $content['message'];
 					break;
 				case "message":
-					parent::sendMessage($content['message'], $this->sender->getID(), $this->receiver->getID());
+					if ($conf['testMode'])
+						echo $content['message'];
+					else
+						parent::sendMessage($content['message'], $this->sender->getID(), $this->receiver->getID());
 					break;
 				default:
 					throw new BotException('unknown message type \''.$content['type'].'\' for sending message');
 			}
 		}
-
-		$bot = Bot::getInstance();
-		if (is_null($bot))
-			throw BotException('can\'t take the Bot', 6);
 
 		// start waiting
 		$bot->startWaiting();
@@ -886,7 +905,7 @@ abstract class Commands {
 	static $handlers = array('command_entries', 'command_user', 'command_balance', 'command_show', 'command_accounts');
 	//------------------------------------------------------
 
-	static function command_accounts($sender, $in, &$out) {
+	static function command_accounts($sender, $in, &$out, $inOrigin) {
 
 		$bot = Bot::getInstance();
 		if (is_null($bot))
@@ -921,7 +940,7 @@ abstract class Commands {
 	} // Commands::command_accounts
 	//------------------------------------------------------
 
-	static function command_show($sender, $in, &$out) {
+	static function command_show($sender, $in, &$out, $inOrigin) {
 
 		$bot = Bot::getInstance();
 		if (is_null($bot))
@@ -947,8 +966,8 @@ abstract class Commands {
 					$nextIndex = 2;
 				// details
 				$details = ((count($parts) > $nextIndex) && ($parts[$nextIndex] == 'детали'));
-				$bot->insertLog($parts[$nextIndex-1], DEBUG);
-				$bot->insertLog("1. details=$details", DEBUG);
+				//$bot->insertLog($parts[$nextIndex-1], DEBUG);
+				//$bot->insertLog("1. details=$details", DEBUG);
 			}
 			$details |= !$conf['devideForAll'];
 			$isThisCase = true;
@@ -982,13 +1001,14 @@ abstract class Commands {
 	} // Commands::command_show
 	//------------------------------------------------------
 
-	static function command_entries($sender, $in, &$out) {
+	static function command_entries($sender, $in, &$out, $inOrigin) {
 
 		$bot = Bot::getInstance();
 		if (is_null($bot))
 			throw BotException('can\'t take the Bot', 9);
 		if (!$bot->isAdmin())
 			return false;
+		$conf = $bot->getConf();
 		$isThisCase = false;
 		$parts = explode(' ', $in);
 
@@ -1003,6 +1023,7 @@ abstract class Commands {
 
 			$operationDate = NULL;
 			$account = '';
+			$user = NULL;
 			$comment = '';
 			if (count($parts) > 1) {
 				$start = strlen($parts[0]) + 1;
@@ -1019,10 +1040,16 @@ abstract class Commands {
 				if (count($parts) > $accountIndex) {
 					$accounts = $bot->getAccount($parts[$accountIndex]);
 					$start += (count($accounts) == 1 ? strlen($parts[$accountIndex]) + 1 : 0);
+					if ((count($accounts) == 1) && ($accounts[0]['title'] == $conf['defaultIncomeAccount']) && (count($parts) > ($accountIndex + 1))) {
+						$error = '';
+						$user = $bot->findUserByName($parts[$accountIndex + 1], $error);
+						if (!is_null($user) && ($user instanceof Member))
+							$start += strlen($parts[$accountIndex + 1]) + 1;
+					}
 				}
 
 				// comment
-				$comment = substr(implode(" ", $parts), $start);
+				$comment = substr($inOrigin, $start);
 				$comment = strlen($comment) <= 300 ? $comment : substr($comment, 300);
 			}
 
@@ -1036,20 +1063,86 @@ abstract class Commands {
 		// implement this case
 		try {
 			$date = is_null($operationDate) ? date('Y-m-d H:i:s') : $operationDate;
-			$conf = $bot->getConf();
 
 			$account = (count($accounts) == 1) ? $accounts[0] : '';
 
-			if ($conf['devideForAll']) { // devide for all active users
-				$users = $bot->getActiveUsers($date);
-				if (is_null($users))
-					throw new Exception('Can\'t response active users');
-				$userCount = count($users);
-				$amountForDevide = $amount;
-				$queryStr = '';
-				foreach ($users as $user) {
-					$amountForOne = round($amountForDevide / $userCount, 2);
-					$queryStr .= "
+			if ($account['title'] == $conf['defaultIncomeAccount']) {
+				if (is_null($user))
+					$message = 'не найдент пользователь для приёма перевода';
+				else {
+					$queryStr="
+						INSERT INTO
+							purse(period
+								,motion
+								,amount
+								,account
+								,comment
+								,userID
+								,purseID
+							)
+						VALUES('".$date."'
+							,0
+							,-".abs($amount)."
+							,'".$account['id']."'
+							,'для ".$user->getName()."'
+							,".$sender->getID()."
+							,".$sender->getPurseID().");
+						INSERT INTO
+							purse(period
+								,motion
+								,amount
+								,account
+								,comment
+								,userID
+								,purseID
+							)
+						VALUES('".$date."'
+							,1
+							,".abs($amount)."
+							,'".$account['id']."'
+							,'от ".$sender->getName()."'
+							,".$user->getID()."
+							,".$sender->getPurseID().")";
+					$bot->insertLog($queryStr);
+					if (is_null($bot->query($queryStr)))
+						throw new StorageException('ошибка обработки команды');
+					$message = 'перевод на сумму '.abs($amount).' для пользователя '.$user->getName().' выполнен';
+				}
+			} else {
+				if ($conf['devideForAll']) { // devide for all active users
+					$users = $bot->getActiveUsers($date);
+					if (is_null($users))
+						throw new Exception('Can\'t response active users');
+					$userCount = count($users);
+					$amountForDevide = $amount;
+					$queryStr = '';
+					foreach ($users as $user) {
+						$amountForOne = round($amountForDevide / $userCount, 2);
+						$queryStr .= "
+							INSERT INTO
+								purse(period
+									,motion
+									,amount
+									,account
+									,comment
+									,userID
+									,purseID
+								)
+							VALUES('".$date."'
+								,".$motion."
+								,".$amountForOne."
+								,'".$account['id']."'
+								,'".$comment."'
+								,".$user['userID']."
+								,".$user['purseID'].");";
+
+						$amountForDevide -= $amountForOne;
+						$userCount--;
+					}
+				}
+				else { // expense hole amount from purse of sender user
+
+					$queryStr="
 						INSERT INTO
 							purse(period
 								,motion
@@ -1061,61 +1154,39 @@ abstract class Commands {
 							)
 						VALUES('".$date."'
 							,".$motion."
-							,".$amountForOne."
+							,".$amount."
 							,'".$account['id']."'
 							,'".$comment."'
-							,".$user['userID']."
-							,".$user['purseID'].");";
-
-					$amountForDevide -= $amountForOne;
-					$userCount--;
+							,".$sender->getID()."
+							,".$sender->getPurseID().")";
 				}
+				$bot->insertLog($queryStr);
+				if (is_null($bot->query($queryStr)))
+					throw new StorageException('ошибка обработки команды');
+
+				$message = '';
+				if ($motion == 0) {
+					$message = 'расход';
+					$amount = 0 - $amount;
+				}
+				else
+					$message = 'приход';
+
+				$message .= " на сумму $amount руб. принят ";
+
+				if (count($accounts) == 1)
+					$message .= "по статье '".$account['title']."' ";
+				else
+					$message .= "без статьи ";
+
+				if ($comment == '')
+					$message .= "без комментария";
+				else
+					$message .= "с комментарием \"$comment\"";
+
+				if (count($accounts) > 1)
+					$message .= "\nБез статьи, т. к. нашлось несколько...";
 			}
-			else { // expense hole amount from purse of sender user
-
-				$queryStr="
-					INSERT INTO
-						purse(period
-							,motion
-							,amount
-							,account
-							,comment
-							,userID
-							,purseID
-						)
-					VALUES('".$date."'
-						,".$motion."
-						,".$amount."
-						,'".$account['id']."'
-						,'".$comment."'
-						,".$sender->getID()."
-						,".$sender->getPurseID().")";
-			}
-			if (is_null($bot->query($queryStr)))
-				throw new StorageException('ошибка обработки команды');
-
-			$message = '';
-			if ($motion == 0) {
-				$message = 'расход';
-				$amount = 0 - $amount;
-			}
-			else
-				$message = 'приход';
-
-			$message .= " на сумму $amount руб. принят ";
-
-			if (count($accounts) == 1)
-				$message .= "по статье '".$account['title']."' ";
-			else
-				$message .= "без статьи ";
-
-			if ($comment == '')
-				$message .= "без комментария";
-			else
-				$message .= "с комментарием \"$comment\"";
-
-			if (count($accounts) > 1)
-				$message .= "\nБез статьи, т. к. нашлось несколько...";
 
 			$out[] = array('message' => $message, 'type' => 'message');
 		} catch (StorageException $e) {
@@ -1138,7 +1209,7 @@ abstract class Commands {
 	3. Пользователь [дата] 'часть имени пользователя' +/- - активация/деактивация пользователя [датой]
 	4. Пользователь [дата] 'часть имени пользователя' депозит 'сумма пополнения'
 	*/
-	static function command_user($sender, $in, &$out) {
+	static function command_user($sender, $in, &$out, $inOrigin) {
 
 		$bot = Bot::getInstance();
 		if (is_null($bot))
@@ -1171,7 +1242,7 @@ abstract class Commands {
 
 				// active only
 				if ((count($parts) > $userIndex) && ($parts[$userIndex] == 'активные')) {
-					$bot->insertLog('active only', DEBUG);
+					//$bot->insertLog('active only', DEBUG);
 					$subCommand = 0;
 					$start += strlen($parts[$userIndex]) + 1;
 				}
@@ -1217,14 +1288,14 @@ abstract class Commands {
 				$start += strlen($parts[$userIndex+2]) + 1;
 
 			// comment
-			$comment = substr(implode(" ", $parts), $start);
+			$comment = substr($inOrigin, $start);
 			$comment = strlen($comment) <= 300 ? $comment : substr($comment, 300);
 
 			if (!is_null($subCommand))
 				$isThisCase = true;
 		}
 
-		$bot->insertLog('1-'.$subCommand.' - '.$isThisCase, DEBUG);
+		//$bot->insertLog('1-'.$subCommand.' - '.$isThisCase, DEBUG);
 		if (!$isThisCase)
 			return false;
 
@@ -1320,7 +1391,7 @@ abstract class Commands {
 	} // Commands::command_user
 	//------------------------------------------------------
 
-	static function command_balance($sender, $in, &$out) {
+	static function command_balance($sender, $in, &$out, $inOrigin) {
 
 		$bot = Bot::getInstance();
 		if (is_null($bot))

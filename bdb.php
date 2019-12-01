@@ -12,8 +12,10 @@ $res = "";
 
 require("config.php");
 
-$conf = new Conf($server, $dbUser, $dbPassword, $database, $debug_mode);
-$db = $conf->getDB();
+//$conf = new Conf($server, $dbUser, $dbPassword, $database, $debug_mode);
+$bot = BotMngr::createBot();
+$conf = $bot->getConf();
+//$db = $conf->getDB();
 //insertLog("connection");
 
 if ($res == "") {
@@ -21,6 +23,9 @@ if ($res == "") {
 		switch ($_POST["command"]) {
 			case "getPurseSummaryData":
 				$res = getPurseSummaryData($_POST["period"], $_POST["userID"]);
+				break;
+			case "getMode":
+				$res = is_null($conf) ? 'error-=-no conf' : "ok-=-{$conf['testMode']}";
 				break;
 			default :
 				$res = "unknown command";

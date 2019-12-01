@@ -3,34 +3,57 @@ var dAnim = 10;
 var rings;
 var timer;
 
-addEventListener('load', function(e) {
-
-	VK.init({apiId: 6770995});
-	timer = setTimeout(checkLoginStatus, 100);
-
+$(function() {
+	//alert("start");
+	$.post("bdb.php", "command=getMode", function(data) {
+		console.log(data);
+		var dat = data.split("-=-");
+		if (dat[0] != "ok") {
+			console.log(dat[1]);
+			return;
+		}
+		if (dat[1] == '1') {
+			$("#erase").click(function() {
+				$("#chat").text("");
+			});
+			$("#send").click(function() {
+				command = '{"type":"message_new","object":{"id":5775,"date":1574950609,"out":0,"user_id":432201510,"read_state":0,"title":"","body":"' + $("#message").val() + '","owner_ids":[]},"group_id":174086337,"event_id":"24e899c6261dfa37fbeaff9fc33759946123433b","secret":"WaTM3iIGkckCkoseVfHI"}';
+				var t = $("#chat").text();
+				$("#chat").text(t + (t == "" ? "" : "\n") + $("#message").val());
+				$.post("bot.php", command, function(data) {
+					$("#chat").text($("#chat").text() + "\n" + data);
+				});
+			});
+		} else {
+			addEventListener('load', function(e) {
+				VK.init({apiId: 6770995});
+				timer = setTimeout(checkLoginStatus, 100);
+			});
+		}
+	});
 });
 //-----------------------------------------------
 
 function checkLoginStatus() {
-	
+
 	VK.Auth.getLoginStatus(authVK);
-	
+
 }
 //-----------------------------------------------
 
 function authVK(response) {
-	
+
 	if (response.status == "connected") {
 		console.log("connected!!!");
 		$("#vk_auth").hide();
 		VK.Widgets.CommunityMessages("vk_community_messages", 174086337, {tooltipButtonText: "Сообщения здесь ->"});
-	    rings = new Rings($("#rings")
-	    	.show()
-	    	.get(0));
-	    startPosition();
-	    timer = setTimeout(update, 100);
-	    $(".amount").click(update);
-	    $(window).resize(startPosition);
+			rings = new Rings($("#rings")
+				.show()
+				.get(0));
+			startPosition();
+			timer = setTimeout(update, 100);
+			$(".amount").click(update);
+			$(window).resize(startPosition);
 	}
 	else {
 		console.log(response.status);
@@ -174,7 +197,7 @@ function update() {
 
 	//console.log(new Date() + " - update");
 	clearTimeout(timer);
-	
+
     $.post("bdb.php", "command=getPurseSummaryData&userID=" + $("#rings").attr("uid"), function(data) {
         console.log(data);
         var dat = data.split("-=-");
