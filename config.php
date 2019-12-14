@@ -453,6 +453,53 @@ class Bot {
 	} // Bot::getAccount
 	//------------------------------------------------------
 
+	// позже переделать определение $dateStartPrev из имеющихся границ периода - на такой же период назад
+	public function getReport($dateStart, $dateEnd, $dateStartPrev, $purseID, $accounts=NULL) {
+		$accountStr = '';
+		if (!is_null($accounts)) {
+			foreach($accounts as $account) {
+				$accountStr .= ($accountStr == '') ? '' : ',';
+				$accountStr .= $account['id'];
+			}
+			$accountStr = ' AND purse.account IN ('.$accountStr.')';
+		}
+
+		$queryStr = "SELECT
+				SUM(purse.amount) AS amount,
+			  accounts.title AS account,
+			  inPrev.amount AS amountPrev
+			FROM
+				purse
+			    INNER JOIN accounts
+			    	ON (accounts.id = purse.account)
+			    LEFT JOIN (SELECT
+			        SUM(purse.amount) AS amount,
+			        accounts.title AS account
+			    FROM
+			        purse
+			        INNER JOIN accounts
+			            ON (accounts.id = purse.account)
+			    WHERE
+			        purse.period >= '$dateStartPrev'
+			        AND purse.period < '$dateStart'
+			    GROUP BY
+			        accounts.title
+			    ) AS inPrev
+			    	ON inPrev.account = accounts.title
+			WHERE
+				purse.period >= '$dateStart'
+			    AND purse.period <= '$dateEnd' ".$accountStr."
+			GROUP BY
+				accounts.title
+			ORDER BY
+				purse.amount";
+		$this->insertLog($queryStr, DEBUG);
+		$res = $this->query($queryStr, BotMngr::QUERY_RESULT_UNLOAD);
+		return $res;
+	}
+	// Bot::getReport
+ //------------------------------------------------------
+
 } // Bot
 //------------------------------------------------------
 
@@ -559,10 +606,9 @@ abstract class Message {
 				case 'message_new':
 
 					$commandFound = false;
-					$mess = mb_strtolower($content['message']);
 
 					// empty command
-					if ($mess == '') {
+					if ($content['message'] == '') {
 						$answerContent[] = array('message' => $bot->getNoCommandMessage(), 'type' => 'message');
 						break;
 					}
@@ -570,7 +616,7 @@ abstract class Message {
 					// check standard commands
 					$conf = $bot->getConf();
 					foreach ($conf['standardCommands'] as $command) {
-						if ($command['message'] == $mess) {
+						if ($command['message'] == mb_strtolower($content['message'])) {
 							foreach ($command['answer'] as $answer) {
 								$answerContent[] = array('message' => $answer, 'type' => 'message');
 							}
@@ -593,7 +639,7 @@ abstract class Message {
 					// check other commands
 					foreach(Commands::$handlers as $handler) {
 						// вставить проверку существования метода и можно ли его запускать
-						if (Commands::$handler($this->sender, $mess, $answerContent, $content['message'])) {
+						if (Commands::$handler($this->sender, $content['message'], $answerContent)) {
 							$commandFound = true;
 							break;
 						}
@@ -902,16 +948,16 @@ class OutMessage extends Message {
 
 abstract class Commands {
 
-	static $handlers = array('command_entries', 'command_user', 'command_balance', 'command_show', 'command_accounts');
+	static $handlers = array('command_entries', 'command_user', 'command_balance', 'command_show', 'command_accounts', 'command_report');
 	//------------------------------------------------------
 
-	static function command_accounts($sender, $in, &$out, $inOrigin) {
+	static function command_accounts($sender, $in, &$out) {
 
 		$bot = Bot::getInstance();
 		if (is_null($bot))
 			throw BotException('can\'t take the Bot', 9);
 		$isThisCase = false;
-		$parts = explode(' ', $in);
+		$parts = explode(' ', mb_strtolower($in));
 
 		// check for this case
 		if ($parts[0] == 'статьи') {
@@ -940,14 +986,14 @@ abstract class Commands {
 	} // Commands::command_accounts
 	//------------------------------------------------------
 
-	static function command_show($sender, $in, &$out, $inOrigin) {
+	static function command_show($sender, $in, &$out) {
 
 		$bot = Bot::getInstance();
 		if (is_null($bot))
 			throw BotException('can\'t take the Bot', 9);
 		$conf = $bot->getConf();
 		$isThisCase = false;
-		$parts = explode(' ', $in);
+		$parts = explode(' ', mb_strtolower($in));
 
 		// check for this case
 		$operationDate = NULL;
@@ -1001,7 +1047,7 @@ abstract class Commands {
 	} // Commands::command_show
 	//------------------------------------------------------
 
-	static function command_entries($sender, $in, &$out, $inOrigin) {
+	static function command_entries($sender, $in, &$out) {
 
 		$bot = Bot::getInstance();
 		if (is_null($bot))
@@ -1010,7 +1056,7 @@ abstract class Commands {
 			return false;
 		$conf = $bot->getConf();
 		$isThisCase = false;
-		$parts = explode(' ', $in);
+		$parts = explode(' ', mb_strtolower($in));
 
 		// check for this case
 		// не указан знак суммы или указан знак слитно с суммой
@@ -1049,7 +1095,7 @@ abstract class Commands {
 				}
 
 				// comment
-				$comment = substr($inOrigin, $start);
+				$comment = substr($in, $start);
 				$comment = strlen($comment) <= 300 ? $comment : substr($comment, 300);
 			}
 
@@ -1202,6 +1248,55 @@ abstract class Commands {
 	} // Commands::command_entries
 	//------------------------------------------------------
 
+	static function command_report($sender, $in, &$out) {
+		$bot = Bot::getInstance();
+		if (is_null($bot))
+			throw BotException('can\'t take the Bot', 9);
+
+		$isThisCase = false;
+		$parts = explode(' ', mb_strtolower($in));
+
+		// check for this case
+		if (($parts[0] == 'отчет') || ($parts[0] == 'отчёт')) {
+			if (count($parts) == 1)
+				$subCommand = 0;
+
+			$accounts = NULL;
+			if (count($parts) > 1)
+				$accounts = $bot->getAccount($parts[1]);
+
+			$isThisCase = true;
+		}
+
+		if (!$isThisCase)
+			return false;
+
+		// implement this case
+		$dateStartPrev = date('Y-m-01 00:00:00', mktime(0, 0, 0, date('m')-1, date('d'), date('Y')));
+		$dateStart = date('Y-m').'-01 00:00:00';
+		$dateEnd = date('Y-m').'-'.date('d H:i:s', mktime(23, 59, 59, date('m'), date('t'), date('Y')));
+		$report = $bot->getReport($dateStart, $dateEnd, $dateStartPrev, $sender->getPurseID(), $accounts);
+
+		$bot->insertLog(count($report), DEBUG);
+		$reportList = "отчёт за текущий месяц:\n";
+		foreach ($report as $index => $operation) {
+			$trend = (abs($operation['amount']) > abs($operation['amountPrev'])) ? '/\\' : '\\/';
+			if (is_null($operation['amountPrev'])) {
+				$percent = 100;
+				$trend = "/\\";
+				$operation['amountPrev'] = 0;
+			}
+			else
+				$percent = round(abs($operation['amount']) * 100 / abs($operation['amountPrev']));
+			$reportList .= $operation['amount'].'  руб. '.$operation['account'].' '.$trend.' '.$operation['amountPrev'].' руб. ('.$percent."%)\n";
+		}
+		$out[] = array('message' => $reportList, 'type' => 'message');
+
+		return true;
+
+	} // Commands::command_report
+	//------------------------------------------------------
+
 	/* command_user
 	Типы сообщений:
 	1. Пользователь - список всех подключённых пользователей к кошельку (права админа)
@@ -1209,7 +1304,7 @@ abstract class Commands {
 	3. Пользователь [дата] 'часть имени пользователя' +/- - активация/деактивация пользователя [датой]
 	4. Пользователь [дата] 'часть имени пользователя' депозит 'сумма пополнения'
 	*/
-	static function command_user($sender, $in, &$out, $inOrigin) {
+	static function command_user($sender, $in, &$out) {
 
 		$bot = Bot::getInstance();
 		if (is_null($bot))
@@ -1217,7 +1312,7 @@ abstract class Commands {
 		if (!$bot->isAdmin())
 			return false;
 		$isThisCase = false;
-		$parts = explode(' ', $in);
+		$parts = explode(' ', mb_strtolower($in));
 
 		// check for this case
 		$subCommand = NULL;
@@ -1288,7 +1383,7 @@ abstract class Commands {
 				$start += strlen($parts[$userIndex+2]) + 1;
 
 			// comment
-			$comment = substr($inOrigin, $start);
+			$comment = substr($in, $start);
 			$comment = strlen($comment) <= 300 ? $comment : substr($comment, 300);
 
 			if (!is_null($subCommand))
@@ -1391,13 +1486,13 @@ abstract class Commands {
 	} // Commands::command_user
 	//------------------------------------------------------
 
-	static function command_balance($sender, $in, &$out, $inOrigin) {
+	static function command_balance($sender, $in, &$out) {
 
 		$bot = Bot::getInstance();
 		if (is_null($bot))
 			throw BotException('can\'t take the Bot', 9);
 		$isThisCase = false;
-		$parts = explode(' ', $in);
+		$parts = explode(' ', mb_strtolower($in));
 
 		// check for this case
 		if ($parts[0] == 'баланс') {

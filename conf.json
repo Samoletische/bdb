@@ -1,7 +1,7 @@
 {
   "testMode": true,
   "mainInput": "php://input",
-  "testInput": "http://192.168.0.20/bdb/testInput.php",
+  "testInput": "php://input",
   "accessToken": "c1c54ca3eec1c6d97871e828b43d9fbc4be3ae939f0012af589382cb18f2037c3eeb77a898be18e8ff42c",
   "groupToken": "4c1676e87257d06b8be701735285527381d83f5a0079f965b8cd81f78af74b50c5044d58c949dc6900adf",
   "confirmToken": "94d549c5",
